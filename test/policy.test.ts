@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_CONFIG } from "../src/config";
 import { decide, type PolicyInput, type PolicyRoute } from "../src/policy";
 import type { Classification } from "../src/types";
+import { KeywordEngine, resolveRoutes } from "../src/routes";
 
 const routes: PolicyRoute[] = [
 	{ name: "quick-edit", rank: 0, hasModel: true, target: "p/fast" },
@@ -121,5 +122,12 @@ describe("decide", () => {
 		const broken = routes.map(r => (r.name === "plan" ? { ...r, target: undefined } : r));
 		const v = decide(base({ routes: broken, cls: cls({ route: "plan" }) }));
 		expect(v).toMatchObject({ switchModel: false, pinnedRoute: undefined });
+	});
+	test("keyword typo follow-up cannot downgrade a pinned plan", async () => {
+		const classification = await new KeywordEngine().classify(
+			{ latestRequest: "fix the typo you just added" }, resolveRoutes(DEFAULT_CONFIG),
+		);
+		const verdict = decide(base({ pinnedRoute: "plan", currentModel: "p/deep", cls: classification }));
+		expect(verdict).toMatchObject({ pinnedRoute: "plan", switchModel: false, taskStart: false });
 	});
 });

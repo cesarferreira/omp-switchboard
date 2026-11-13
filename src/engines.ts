@@ -1,6 +1,7 @@
 import { completeSimple, createNativeJudge } from "@oh-my-pi/pi-ai";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { isObj } from "./config";
+import { boundRecent, clipMiddle, LATEST_REQUEST_CHARS, SUMMARY_CHARS } from "./snapshot";
 import type { Classification, DecisionEngine, ResolvedRoute, Snapshot, SwitchboardConfig } from "./types";
 
 const JUDGE_APIS: Record<string, true> = {
@@ -20,11 +21,16 @@ const TASK_CRITERIA = {
 		"The latest request continues, refines, fixes, or asks about the work already in progress (including short replies like 'yes', 'continue', 'now add tests').",
 };
 
-function stateOf(s: Snapshot): Record<string, unknown> {
+/** Remote projection shared by the chat and judge engines. Bounds every text part; the snapshot itself stays full. */
+export function stateOf(s: Snapshot): Record<string, unknown> {
 	return {
 		current_model: s.currentModel,
-		latest_request: s.latestRequest,
-		recent_conversation: s.recent,
+		latest_request: clipMiddle(s.latestRequest, LATEST_REQUEST_CHARS),
+		latest_request_truncated: s.latestRequest.length > LATEST_REQUEST_CHARS,
+		attachment_count: s.attachmentCount,
+		conversation_summary: s.summary === undefined ? null : clipMiddle(s.summary, SUMMARY_CHARS),
+		compacted_evidence_unavailable: s.compactedEvidenceUnavailable,
+		recent_conversation: boundRecent(s.recent),
 		active_task_route: s.pinnedRoute ?? null,
 		context_tokens: s.contextTokens ?? null,
 	};

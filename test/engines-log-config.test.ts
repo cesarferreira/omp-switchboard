@@ -85,7 +85,7 @@ describe("summarize", () => {
 	test("reports counts, switches, latency percentiles and tool errors", () => {
 		const recs: LogRecord[] = [
 			decision({ id: "a", desiredRoute: "plan", wouldSwitch: true, engineLatencyMs: 100 }),
-			decision({ id: "b", desiredRoute: "plan", applied: true, engineLatencyMs: 300, error: "boom" }),
+			decision({ id: "b", desiredRoute: "plan", applied: true, modelChanged: true, engineLatencyMs: 300, error: "boom" }),
 			decision({ id: "c", desiredRoute: "quick-edit", taskStart: false, engineLatencyMs: 200 }),
 			{ type: "outcome", id: "a", ts: 0, model: "p/m", durationMs: 1, toolCalls: 4, toolErrors: 1, aborted: false },
 		];
@@ -97,6 +97,15 @@ describe("summarize", () => {
 		expect(out).toContain("applied 1, would-switch 1");
 		expect(out).toContain("p50 200ms p95 300ms");
 		expect(out).toContain("tool errors 1/4");
+	});
+
+	test("thinking-only applications are not reported as model switches", () => {
+		const out = summarize([
+			decision({ id: "thinking", applied: true, modelChanged: false, thinkingChanged: true }),
+			decision({ id: "legacy", applied: true, wouldSwitch: false }),
+		]);
+		expect(out).toContain("model switches: applied 0");
+		expect(out).toContain("thinking changes: 1");
 	});
 
 	test("empty log", () => {
