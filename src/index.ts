@@ -43,6 +43,9 @@ export default function switchboard(pi: ExtensionAPI) {
 	let turn: { id: string; startedAt: number; toolCalls: number; toolErrors: number } | undefined;
 	let handledPrompt: string | undefined;
 	let pendingStamp: string | undefined;
+	/** Model the session was left on by our last decision; a different one means a manual /model switch. */
+	let expectedModel: string | undefined;
+	let manualHold = false;
 	/** Display-only stamps keyed by the final assistant message's timestamp. */
 	const stamps = new Map<number, string>();
 	const keywords = new KeywordEngine();
@@ -67,6 +70,8 @@ export default function switchboard(pi: ExtensionAPI) {
 		pinnedRoute = undefined;
 		last = undefined;
 		handledPrompt = undefined;
+		expectedModel = undefined;
+		manualHold = false;
 		pendingStamp = undefined;
 		reload(ctx);
 	});
@@ -75,6 +80,13 @@ export default function switchboard(pi: ExtensionAPI) {
 		if (event.reason !== "prompt" || ctx.agent.kind !== "main") return;
 		const mode = effectiveMode(config, override);
 		if (mode === "off" || !ctx.model) return;
+		// If the model is not the one we left it on, the user changed it by hand: stop auto-routing
+		// until they re-enable it, instead of overwriting their choice on the next task.
+		if (mode === "auto" && !manualHold && expectedModel !== undefined && ref(ctx.model) !== expectedModel) {
+			manualHold = true;
+			ctx.ui.notify("switchboard: model changed by hand; routing paused (/switchboard on to resume)", "info");
+		}
+		if (mode === "auto" && manualHold) return;
 		// The chain re-fires for the same submission and for steer/follow-up batches mid-run.
 		// Route once per run: skip while a run is open so counters and the pin stay stable.
 		if (turn && !ctx.isIdle()) return;
@@ -131,6 +143,7 @@ export default function switchboard(pi: ExtensionAPI) {
 		let applied = false;
 		let reason = verdict.reason;
 		let nextPin = verdict.pinnedRoute;
+		let switchedTo: string | undefined;
 		const route = routes.find(r => r.name === verdict.desiredRoute);
 		if (route && mode === "auto") {
 			const target = resolved.get(route.name);
@@ -138,6 +151,7 @@ export default function switchboard(pi: ExtensionAPI) {
 				if (verdict.switchModel && target) {
 					if (await pi.setModel(target)) {
 						applied = true;
+						switchedTo = ref(target);
 					} else {
 						reason += "; setModel refused (no credentials?)";
 						nextPin = pinnedRoute;
@@ -156,6 +170,7 @@ export default function switchboard(pi: ExtensionAPI) {
 			}
 		}
 		pinnedRoute = nextPin;
+		expectedModel = switchedTo ?? currentModel;
 
 		if (route && config.stamp) {
 			const target = routeModels[route.name] ?? currentModel;
@@ -222,6 +237,11 @@ export default function switchboard(pi: ExtensionAPI) {
 		return `${text}\n\n---\n_${stamp}_`;
 	});
 
+	// Auto-retry may swap the model under us; forget what we expected so that is not mistaken for a manual choice.
+	pi.on("retry_fallback_applied", async () => {
+		expectedModel = undefined;
+	});
+
 	pi.on("tool_result", async event => {
 		if (!turn) return;
 		turn.toolCalls++;
@@ -273,12 +293,16 @@ export default function switchboard(pi: ExtensionAPI) {
 			switch (sub) {
 				case "on":
 					override = "auto";
+					manualHold = false;
+					expectedModel = undefined;
 					return say("switchboard: auto (switches models)");
 				case "off":
 					override = "off";
 					return say("switchboard: off");
 				case "shadow":
 					override = "shadow";
+					manualHold = false;
+					expectedModel = undefined;
 					return say("switchboard: shadow (logs recommendations, never switches)");
 				case "reload":
 					reload(ctx);
@@ -292,6 +316,7 @@ export default function switchboard(pi: ExtensionAPI) {
 							`setup: ${activeSetup() ?? "none (top-level routes)"}`,
 							`stamp: ${config.stamp ? (rendererSettingOn() ? "on" : "on, but Extension Reply Renderers is off (Tools > Extensions)") : "off"}`,
 							`pinned route: ${pinnedRoute ?? "none"}`,
+							`routing: ${manualHold ? "paused: you chose a model by hand (/switchboard on to resume)" : "active"}`,
 							`current: ${ctx.model ? ref(ctx.model) : "none"} / thinking ${pi.getThinkingLevel()}`,
 							`config: ${configPath()}`,
 						].join("\n"),

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Mode, RouteConfig, SwitchboardConfig } from "./types";
+import { type Mode, type RouteConfig, type SwitchboardConfig, THINKING_LEVELS } from "./types";
 
 export const DEFAULT_CONFIG: SwitchboardConfig = {
 	enabled: true,
@@ -52,6 +52,43 @@ export interface LoadedConfig {
 	error?: string;
 }
 
+/**
+ * Drop route fields whose type or value would reach the host unchecked (a typo in `thinking`,
+ * `keywords` that is not a list). Mutates `config`; returns one warning per dropped field.
+ */
+export function sanitizeRoutes(config: SwitchboardConfig): string[] {
+	const warnings: string[] = [];
+	const layers: [string, unknown][] = [["routes", config.routes]];
+	for (const [name, setup] of Object.entries(config.setups)) {
+		layers.push([`setups.${name}.routes`, isObj(setup) ? setup.routes : undefined]);
+	}
+	for (const [where, routes] of layers) {
+		if (!isObj(routes)) continue;
+		for (const [name, route] of Object.entries(routes)) {
+			if (!isObj(route)) {
+				delete routes[name];
+				warnings.push(`${where}.${name} must be an object; ignored`);
+				continue;
+			}
+			const drop = (field: string, why: string) => {
+				delete route[field];
+				warnings.push(`${where}.${name}.${field} ${why}; ignored`);
+			};
+			const { thinking, model, keywords, description, rank } = route;
+			if (thinking !== undefined && !THINKING_LEVELS.some(l => l === thinking)) {
+				drop("thinking", `"${String(thinking)}" is not one of ${THINKING_LEVELS.join("|")}`);
+			}
+			if (model !== undefined && typeof model !== "string") drop("model", "must be a string");
+			if (keywords !== undefined && !(Array.isArray(keywords) && keywords.every(k => typeof k === "string"))) {
+				drop("keywords", "must be a list of strings");
+			}
+			if (description !== undefined && typeof description !== "string") drop("description", "must be a string");
+			if (rank !== undefined && (typeof rank !== "number" || !Number.isFinite(rank))) drop("rank", "must be a number");
+		}
+	}
+	return warnings;
+}
+
 export function loadConfig(path = configPath()): LoadedConfig {
 	if (!existsSync(path)) return { config: DEFAULT_CONFIG };
 	try {
@@ -61,11 +98,11 @@ export function loadConfig(path = configPath()): LoadedConfig {
 		if (mode !== undefined && mode !== "auto" && mode !== "shadow" && mode !== "off") {
 			return { config: DEFAULT_CONFIG, error: `invalid mode ${JSON.stringify(mode)}; expected auto|shadow|off` };
 		}
-		const warn =
-			config.activeSetup && !config.setups[config.activeSetup]
-				? `activeSetup "${config.activeSetup}" does not exist; using top-level routes`
-				: undefined;
-		return { config, error: warn };
+		const warnings = sanitizeRoutes(config);
+		if (config.activeSetup && !config.setups[config.activeSetup]) {
+			warnings.push(`activeSetup "${config.activeSetup}" does not exist; using top-level routes`);
+		}
+		return { config, error: warnings.length ? warnings.join("; ") : undefined };
 	} catch (e) {
 		return { config: DEFAULT_CONFIG, error: `${path}: ${e instanceof Error ? e.message : String(e)}` };
 	}

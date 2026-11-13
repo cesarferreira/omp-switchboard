@@ -86,6 +86,7 @@ Stored under `setups` (same `routes` shape) with `activeSetup` naming the one in
 - Context guard: a switch is refused when the conversation is larger than `contextWindowFraction` (default 80%) of the target model's context window, so a route with a small-window model cannot be entered from a long session.
 - Below `minConfidence`, an engine error, or an unresolvable route model: the current model is kept.
 - Subagents are never routed.
+- Context guard and cache guard both keep the current model rather than failing the prompt.
 
 ## Response stamp
 
@@ -107,6 +108,8 @@ In shadow mode it reads "Switchboard (shadow, not applied)". The stamp is displa
 ## Interactions
 
 - Routing happens once per run; steer/follow-up batches inside a running turn are not re-classified.
+- A manual `/model` switch is respected: when the live model is not the one Switchboard left, auto-routing pauses (you get a notice, and `/switchboard status` shows `routing: paused`) until you run `/switchboard on`. Shadow mode keeps logging. An auto-retry fallback is not mistaken for a manual choice.
+- Invalid route fields in `switchboard.json` (an unknown `thinking` level, `keywords` that is not a list, ...) are dropped with a warning at load, never passed to the host.
 - OMP's own `prewalk.auto` and `defaultThinkingLevel: auto` also pick models per task. If enabled they can override Switchboard's choice at task start; use one router at a time.
 
 ## Not yet

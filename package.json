@@ -11,6 +11,11 @@
     "router",
     "llm"
   ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "omp": {
     "extensions": [
       "./src/index.ts"
@@ -21,6 +26,7 @@
     "check": "tsc --noEmit"
   },
   "peerDependencies": {
+    "@oh-my-pi/pi-ai": "^18.20.0",
     "@oh-my-pi/pi-coding-agent": "^18.20.0"
   },
   "devDependencies": {
