@@ -1,17 +1,31 @@
 {
-	"name": "omp-switchboard",
-	"version": "0.1.0",
-	"description": "Context-aware model router for Oh My Pi: picks model + thinking level per task via a pluggable decision engine.",
-	"type": "module",
-	"license": "MIT",
-	"keywords": ["omp", "oh-my-pi", "extension", "router", "llm"],
-	"omp": {
-		"extensions": ["./src/index.ts"]
-	},
-	"scripts": {
-		"test": "bun test"
-	},
-	"peerDependencies": {
-		"@oh-my-pi/pi-coding-agent": "*"
-	}
+  "name": "omp-switchboard",
+  "version": "0.1.0",
+  "description": "Context-aware model router for Oh My Pi: picks model + thinking level per task via a pluggable decision engine.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "extension",
+    "router",
+    "llm"
+  ],
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "bun test",
+    "check": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": "^18.20.0"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-ai": "^18.20.0",
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
 }

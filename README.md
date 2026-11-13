@@ -87,14 +87,14 @@ Stored under `setups` (same `routes` shape) with `activeSetup` naming the one in
 
 ## Response stamp
 
-With `stamp: true`, the final text of each routed run ends with:
+With `stamp: true`, the TUI draws a line under the final text of each routed run:
 
 ```
 ---
 _Switchboard: quick-edit → bifrost/gpt-6-luna · thinking low · matched: "rename"_
 ```
 
-In shadow mode it reads "Switchboard (shadow, not applied)". The stamp becomes part of the conversation history. Set `stamp: false` to turn it off.
+In shadow mode it reads "Switchboard (shadow, not applied)". The stamp is display-only: it is drawn by an assistant-text renderer, so the session, exports and model context keep the reply exactly as written. It appears in the TUI only (not in print/RPC output) and is not restored when you resume a session. Set `stamp: false` to turn it off.
 
 ## Log
 

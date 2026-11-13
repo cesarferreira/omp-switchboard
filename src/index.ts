@@ -30,6 +30,8 @@ const ref = (m: ModelRef): string => `${m.provider}/${m.id}`;
 const USAGE =
 	"/switchboard on | off | shadow | status | explain | stats | routes | setups | save <name> | use <name|none> | reload\n/switchboard-setup  (interactive: pick model + thinking per route)";
 
+const MAX_STAMPS = 200;
+
 export default function switchboard(pi: ExtensionAPI) {
 	let loaded = loadConfig();
 	let config: SwitchboardConfig = loaded.config;
@@ -40,6 +42,8 @@ export default function switchboard(pi: ExtensionAPI) {
 	let turn: { id: string; startedAt: number; toolCalls: number; toolErrors: number } | undefined;
 	let handledPrompt: string | undefined;
 	let pendingStamp: string | undefined;
+	/** Display-only stamps keyed by the final assistant message's timestamp. */
+	const stamps = new Map<number, string>();
 	const keywords = new KeywordEngine();
 
 	pi.setLabel("Switchboard");
@@ -127,7 +131,9 @@ export default function switchboard(pi: ExtensionAPI) {
 				}
 				// setModel resets thinking to the model default, so always re-apply the route's level.
 				if (nextPin === route.name && route.thinking && pi.getThinkingLevel() !== route.thinking) {
-					pi.setThinkingLevel(route.thinking);
+					// Config values are validated strings; the host's thinking enum members are the same strings.
+					const level = route.thinking as Parameters<ExtensionAPI["setThinkingLevel"]>[0];
+					pi.setThinkingLevel(level);
 					applied = true;
 				}
 			} catch (e) {
@@ -149,7 +155,7 @@ export default function switchboard(pi: ExtensionAPI) {
 		handledPrompt = event.prompt;
 		const id = crypto.randomUUID();
 		turn = { id, startedAt: Date.now(), toolCalls: 0, toolErrors: 0 };
-		last = {
+		const record: DecisionRecord = {
 			type: "decision",
 			id,
 			ts: Date.now(),
@@ -159,7 +165,7 @@ export default function switchboard(pi: ExtensionAPI) {
 			engineLatencyMs,
 			engineCostUsd: cls.costUsd,
 			currentModel,
-			currentThinking,
+			currentThinking: String(currentThinking ?? "default"),
 			routeModels,
 			classification: {
 				newTask: cls.newTask,
@@ -178,21 +184,26 @@ export default function switchboard(pi: ExtensionAPI) {
 			error,
 			promptPreview: config.logPrompts ? event.prompt.slice(0, 120) : undefined,
 		};
-		if (config.logging) appendLog(last);
+		last = record;
+		if (config.logging) appendLog(record);
 	});
 
-	// Stamp the final text of a routed run. Text blocks keep their count and order; only the last one grows.
+	// The stamp is display-only: remember it per final assistant message and draw it in the renderer,
+	// so the session, exports and model context keep the reply as written.
 	pi.on("assistant_message", async event => {
 		if (!pendingStamp) return;
-		const content = event.message.content;
-		if (!Array.isArray(content) || content.some(b => b.type === "toolCall")) return;
-		const idx = content.findLastIndex(b => b.type === "text");
-		if (idx < 0) return;
-		const stamp = pendingStamp;
+		const { content, timestamp } = event.message;
+		if (!Array.isArray(content) || content.some(b => b.type === "toolCall") || !content.some(b => b.type === "text")) return;
+		stamps.set(timestamp, pendingStamp);
 		pendingStamp = undefined;
-		return {
-			content: content.map((b, i) => (i === idx && b.type === "text" ? { ...b, text: `${b.text}\n\n---\n_${stamp}_` } : b)),
-		};
+		if (stamps.size > MAX_STAMPS) stamps.delete(stamps.keys().next().value!);
+	});
+
+	pi.registerAssistantTextRenderer(({ message, contentIndex, text, streaming }) => {
+		if (streaming) return;
+		const stamp = stamps.get(message.timestamp);
+		if (!stamp || message.content.findLastIndex(b => b.type === "text") !== contentIndex) return;
+		return `${text}\n\n---\n_${stamp}_`;
 	});
 
 	pi.on("tool_result", async event => {

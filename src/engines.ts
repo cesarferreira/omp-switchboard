@@ -133,7 +133,7 @@ class ChatEngine implements DecisionEngine {
 		const msg = await completeSimple(
 			this.model,
 			{
-				systemPrompt: chatSystem(routes),
+				systemPrompt: [chatSystem(routes)],
 				messages: [
 					{
 						role: "user",
@@ -170,12 +170,13 @@ export async function createEngine(ctx: ExtensionContext, cfg: SwitchboardConfig
 	if (!model) throw new Error(`decision model "${cfg.decision.model}" not found among authenticated models`);
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) throw new Error(auth.error);
+	if (!auth.apiKey) throw new Error(`no API key for ${model.provider}`);
 	const label = `${model.provider}/${model.id}`;
 	if (JUDGE_APIS[model.api]) {
 		const judge = createNativeJudge(model, {
 			apiKey: auth.apiKey,
 			headers: auth.headers,
-			timeoutMs: cfg.decision.timeoutMs,
+			// Timeout is enforced by the AbortSignal passed to classify().
 		});
 		return new JudgeEngine(judge, label);
 	}
