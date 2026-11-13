@@ -1,6 +1,8 @@
 # omp-switchboard
 
-Context-aware model router for [Oh My Pi](https://github.com/can1357/oh-my-pi). Before each user prompt it asks a cheap decision model how hard the task is and whether it is a new task, then pins the matching model + thinking level.
+Automatic per-prompt model and thinking-level routing for [Oh My Pi](https://github.com/can1357/oh-my-pi), in the spirit of [pi-dialer](https://github.com/eSaadster/pi-dialer), with one addition: an optional **decision model** that picks the route instead of keywords.
+
+Each prompt is matched to a task type (**route**): `plan`, `implement`, `deep-dive`, `quick-edit`, `default`, or your own. The route's model and thinking level are applied before the agent starts.
 
 ## Install
 
@@ -8,15 +10,21 @@ Context-aware model router for [Oh My Pi](https://github.com/can1357/oh-my-pi). 
 omp plugin link /path/to/omp-switchboard     # or: omp -e /path/to/omp-switchboard/src/index.ts
 ```
 
+It starts in `shadow` mode (logs what it would do, never switches). `/switchboard on` enables switching for the session; `"mode": "auto"` makes it permanent.
+
+## How routes are chosen
+
+1. **Keywords** (default, no model needed). Each matched phrase scores its word count; the highest total wins ("quick fix" beats "fix"); ties keep the earliest route. No match means `default`, which is treated as a follow-up and stays on the pinned route.
+2. **Decision model** (`decision.model` set). A model reads the latest request plus recent conversation and picks a route using each route's `description`, and says whether it is a new task. A judgment-API model (`openai-decisions`, `google-decisions`, ...) answers through OMP's native judge with real probabilities; any chat model is prompted for JSON. If the decision model fails or times out, keywords are used for that prompt.
+
 ## Config: `~/.omp/agent/switchboard.json`
 
-All keys optional; this is the default (`${VAR}` is expanded in strings):
+All keys optional. `${VAR}` is expanded in strings.
 
 ```json
 {
-  "enabled": true,
   "mode": "shadow",
-  "decision": { "model": "@smol", "timeoutMs": 15000 },
+  "decision": { "model": "bifrost-decisions/gpt-6-luna", "timeoutMs": 15000 },
   "routing": {
     "sticky": true,
     "allowEscalation": true,
@@ -25,40 +33,72 @@ All keys optional; this is the default (`${VAR}` is expanded in strings):
     "minConfidence": 0.6,
     "historyMessages": 6
   },
-  "tiers": {
-    "fast":     { "model": "@smol", "thinking": "low" },
-    "standard": { "model": "@task", "thinking": "medium" },
-    "deep":     { "model": "@slow", "thinking": "high" }
+  "routes": {
+    "plan":       { "model": "@slow",  "thinking": "high" },
+    "quick-edit": { "model": "@smol",  "thinking": "low", "keywords": ["rename", "typo", "bump"] },
+    "research":   { "model": "bifrost/gpt-6-sol", "thinking": "xhigh", "keywords": ["benchmark"],
+                    "description": "Comparing libraries or surveying the state of the art.", "rank": 3 }
   },
+  "stamp": true,
   "logging": true,
   "logPrompts": false
 }
 ```
 
-`mode`: `shadow` (default; log recommendations, never switch), `auto`, `off`.
+Per route:
 
-### Decision engine
+| Field | Default | Meaning |
+|---|---|---|
+| `model` | built-in route's model; unset or `""` = keep current model | `provider/id`, bare id, or role alias (`@smol`, `@task`, `@slow`, `@default`) |
+| `thinking` | built-in route's level | `off` `minimal` `low` `medium` `high` `xhigh` |
+| `keywords` | built-in list | Phrases that select the route. Setting it **replaces** the built-in list. A custom route needs keywords (or a decision model plus `description`) to be chosen. |
+| `description` | built-in text, else derived from keywords | What the route is for; shown to the decision model |
+| `rank` | built-in rank, else 1 | Strength. Follow-ups may escalate to a higher rank, never down |
 
-Chosen by the API of `decision.model`:
+Built-in routes (all overridable): `plan` and `deep-dive` use `@slow`/high, `implement` uses `@task`/medium, `quick-edit` uses `@smol`/low, `default` uses `@default`/medium.
 
-- **Judgment API** (`openai-decisions`, `google-decisions`, `typesafe`, ...): OMP's native judge answers two typed `choice` questions with real probabilities. Declare the model in `models.yml` with that `api`; the gateway must serve `{baseUrl}/decisions`.
-- **Any other model**: prompted to return JSON (`{task, tier, confidences}`). Works with any chat model, including Bifrost ones.
+`decision.model` accepts `provider/id`. Declare judgment-API models in `models.yml` with `api: openai-decisions` (the gateway must serve `{baseUrl}/decisions`).
 
-## Routing rules
+## Named setups
 
-- New task (or first prompt): re-route to the classified tier.
-- Follow-up: stay pinned; escalate (never downgrade) if harder and `allowEscalation`.
-- Confidence below `minConfidence`, engine error/timeout, or unresolvable tier model: keep the current model.
-- Cache guard: with more than `cacheGuardTokens` of context, non-escalating model changes are refused (they would discard the prompt cache). Escalation and `deep` pass.
-- Subagents are never routed.
+```
+/switchboard save quality     # snapshot the current routes as "quality" and activate it
+/switchboard-setup            # edits now apply to the active setup
+/switchboard save cheap
+/switchboard use quality
+/switchboard use none         # back to the top-level routes
+```
+
+Stored under `setups` (same `routes` shape) with `activeSetup` naming the one in effect. A setup's routes override the top-level ones per field. These commands rewrite `switchboard.json` (JSON formatting is normalised; `${VAR}` references you wrote by hand are kept).
 
 ## Commands
 
-`/switchboard on|off|shadow|status|explain|stats|models|reload` (on/off/shadow are session-scoped).
+`/switchboard on|off|shadow|status|explain|stats|routes|setups|save <name>|use <name|none>|reload|help`. on/off/shadow are session-scoped.
+
+`/switchboard-setup` picks a model and thinking level per route interactively and writes them to the active setup, or to the top-level `routes`.
+
+## Stickiness, escalation, cache guard
+
+- A prompt starts a task when nothing is pinned or the classifier is confident it is a new task. Otherwise the pinned route stays (so "yes, continue" does not re-route).
+- With a decision model, a follow-up can escalate to a higher-`rank` route (never down) when confident.
+- Cache guard: above `cacheGuardTokens` of context, non-escalating model changes are refused because they would discard the prompt cache.
+- Below `minConfidence`, an engine error, or an unresolvable route model: the current model is kept.
+- Subagents are never routed.
+
+## Response stamp
+
+With `stamp: true`, the final text of each routed run ends with:
+
+```
+---
+_Switchboard: quick-edit → bifrost/gpt-6-luna · thinking low · matched: "rename"_
+```
+
+In shadow mode it reads "Switchboard (shadow, not applied)". The stamp becomes part of the conversation history. Set `stamp: false` to turn it off.
 
 ## Log
 
-`~/.omp/agent/switchboard/decisions.jsonl`: one `decision` record per prompt (engine, latency, cost, classification, applied vs would-switch) and one `outcome` record per run (model, duration, tool calls/errors, aborted). Prompts are not stored unless `logPrompts` is true. Note the decision model receives the latest request and recent conversation text.
+`~/.omp/agent/switchboard/decisions.jsonl`: one `decision` record per prompt (classifier, latency, cost, route, matched keywords, applied vs would-switch) and one `outcome` record per run (model, duration, tool calls/errors, aborted). Prompts are not stored unless `logPrompts` is true. With a decision model, the latest request and recent conversation text are sent to it.
 
 ## Interactions
 
@@ -67,4 +107,4 @@ Chosen by the API of `decision.model`:
 
 ## Not yet
 
-Learning from outcomes, per-task cost estimation, project-level config.
+Project-local config, a virtual "Switchboard" model in the picker, learning from outcomes, per-task cost estimation.

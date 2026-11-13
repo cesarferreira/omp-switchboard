@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { logDir } from "./config";
-import type { Mode, Tier } from "./types";
+import type { Mode } from "./types";
 
 export interface DecisionRecord {
 	type: "decision";
@@ -14,10 +14,10 @@ export interface DecisionRecord {
 	engineCostUsd?: number;
 	currentModel: string;
 	currentThinking: string;
-	tierModels: Record<Tier, string | undefined>;
-	classification?: { newTask: boolean; newTaskConfidence: number; tier: Tier; tierConfidence: number };
-	desiredTier?: Tier;
-	pinnedTier?: Tier;
+	routeModels: Record<string, string | undefined>;
+	classification?: { newTask: boolean; newTaskConfidence: number; route: string; routeConfidence: number; matched?: string[] };
+	desiredRoute?: string;
+	pinnedRoute?: string;
 	taskStart: boolean;
 	applied: boolean;
 	/** In shadow mode: the switch the router would have made. */
@@ -91,7 +91,7 @@ export function summarize(recs: LogRecord[]): string {
 	const toolCalls = done.reduce((s, o) => s + o.toolCalls, 0);
 	return [
 		`decisions: ${decisions.length} (errors ${errors})`,
-		`desired tier: ${by(d => d.desiredTier)}`,
+		`desired route: ${by(d => d.desiredRoute)}`,
 		`task starts: ${decisions.filter(d => d.taskStart).length}`,
 		`switches: applied ${applied}, would-switch ${would}`,
 		`engine latency: p50 ${p50}ms p95 ${p95}ms; cost $${cost.toFixed(4)}`,

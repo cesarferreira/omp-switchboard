@@ -1,23 +1,46 @@
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { configPath, effectiveMode, loadConfig } from "./config";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import {
+	configPath,
+	effectiveMode,
+	loadConfig,
+	patchRoute,
+	readRawConfig,
+	saveSetup,
+	useSetup,
+	writeRawConfig,
+} from "./config";
 import { createEngine, resolveDecisionModel } from "./engines";
 import { appendLog, type DecisionRecord, readLog, summarize } from "./log";
-import { decide } from "./policy";
+import { decide, type PolicyRoute } from "./policy";
+import { KeywordEngine, resolveRoutes } from "./routes";
 import { buildSnapshot } from "./snapshot";
-import { type Classification, type DecisionEngine, type Mode, type SwitchboardConfig, TIERS, type Tier } from "./types";
+import {
+	type Classification,
+	type DecisionEngine,
+	type Mode,
+	type RouteConfig,
+	type SwitchboardConfig,
+	THINKING_LEVELS,
+	type ThinkingLevel,
+} from "./types";
 
 type ModelRef = NonNullable<ExtensionContext["model"]>;
 const ref = (m: ModelRef): string => `${m.provider}/${m.id}`;
+
+const USAGE =
+	"/switchboard on | off | shadow | status | explain | stats | routes | setups | save <name> | use <name|none> | reload\n/switchboard-setup  (interactive: pick model + thinking per route)";
 
 export default function switchboard(pi: ExtensionAPI) {
 	let loaded = loadConfig();
 	let config: SwitchboardConfig = loaded.config;
 	let override: Mode | undefined;
-	let pinnedTier: Tier | undefined;
+	let pinnedRoute: string | undefined;
 	let engine: { key: string; value: DecisionEngine } | undefined;
 	let last: DecisionRecord | undefined;
 	let turn: { id: string; startedAt: number; toolCalls: number; toolErrors: number } | undefined;
 	let handledPrompt: string | undefined;
+	let pendingStamp: string | undefined;
+	const keywords = new KeywordEngine();
 
 	pi.setLabel("Switchboard");
 
@@ -29,9 +52,10 @@ export default function switchboard(pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_e, ctx) => {
-		pinnedTier = undefined;
+		pinnedRoute = undefined;
 		last = undefined;
 		handledPrompt = undefined;
+		pendingStamp = undefined;
 		reload(ctx);
 	});
 
@@ -46,38 +70,41 @@ export default function switchboard(pi: ExtensionAPI) {
 		if (handledPrompt === event.prompt) return;
 
 		const currentModel = ref(ctx.model);
-		const resolved: Record<Tier, ModelRef | undefined> = {
-			fast: ctx.models.resolve(config.tiers.fast.model),
-			standard: ctx.models.resolve(config.tiers.standard.model),
-			deep: ctx.models.resolve(config.tiers.deep.model),
-		};
-		const tierModels: Record<Tier, string | undefined> = {
-			fast: resolved.fast && ref(resolved.fast),
-			standard: resolved.standard && ref(resolved.standard),
-			deep: resolved.deep && ref(resolved.deep),
-		};
+		const routes = resolveRoutes(config);
+		const resolved = new Map<string, ModelRef | undefined>(
+			routes.map(r => [r.name, r.model ? ctx.models.resolve(r.model) : undefined]),
+		);
+		const policyRoutes: PolicyRoute[] = routes.map(r => {
+			const m = resolved.get(r.name);
+			return { name: r.name, rank: r.rank, hasModel: r.model !== undefined, target: m && ref(m) };
+		});
+		const routeModels = Object.fromEntries(policyRoutes.map(r => [r.name, r.target]));
 
-		const snapshot = buildSnapshot(ctx, event.prompt, currentModel, pinnedTier, config.routing.historyMessages);
+		const snapshot = buildSnapshot(ctx, event.prompt, currentModel, pinnedRoute, config.routing.historyMessages);
 		const started = Date.now();
 		let cls: Classification | undefined;
 		let error: string | undefined;
-		let engineLabel = config.decision.model;
+		let engineLabel = keywords.label;
 		try {
-			if (engine?.key !== config.decision.model) {
-				engine = { key: config.decision.model, value: await createEngine(ctx, config) };
+			if (config.decision.model) {
+				if (engine?.key !== config.decision.model) {
+					engine = { key: config.decision.model, value: await createEngine(ctx, config) };
+				}
+				engineLabel = engine.value.label;
+				cls = await engine.value.classify(snapshot, routes, AbortSignal.timeout(config.decision.timeoutMs));
 			}
-			engineLabel = engine.value.label;
-			cls = await engine.value.classify(snapshot, AbortSignal.timeout(config.decision.timeoutMs));
 		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
+			error = `${e instanceof Error ? e.message : String(e)}; fell back to keywords`;
+			engineLabel = `${config.decision.model} (failed)`;
 		}
+		cls ??= await keywords.classify(snapshot, routes);
 		const engineLatencyMs = Date.now() - started;
 
 		const verdict = decide({
 			cls,
-			pinnedTier,
+			pinnedRoute,
 			currentModel,
-			tierModels,
+			routes: policyRoutes,
 			contextTokens: snapshot.contextTokens,
 			config: config.routing,
 		});
@@ -85,30 +112,39 @@ export default function switchboard(pi: ExtensionAPI) {
 		const currentThinking = pi.getThinkingLevel();
 		let applied = false;
 		let reason = verdict.reason;
-		let nextPin = verdict.pinnedTier;
-		if (verdict.desiredTier && mode === "auto") {
-			const target = resolved[verdict.desiredTier];
-			const tierCfg = config.tiers[verdict.desiredTier];
+		let nextPin = verdict.pinnedRoute;
+		const route = routes.find(r => r.name === verdict.desiredRoute);
+		if (route && mode === "auto") {
+			const target = resolved.get(route.name);
 			try {
 				if (verdict.switchModel && target) {
 					if (await pi.setModel(target)) {
 						applied = true;
 					} else {
 						reason += "; setModel refused (no credentials?)";
-						nextPin = pinnedTier;
+						nextPin = pinnedRoute;
 					}
 				}
-				// setModel resets thinking to the model default, so always re-apply the tier's level.
-				if (nextPin === verdict.desiredTier && tierCfg.thinking && pi.getThinkingLevel() !== tierCfg.thinking) {
-					pi.setThinkingLevel(tierCfg.thinking);
+				// setModel resets thinking to the model default, so always re-apply the route's level.
+				if (nextPin === route.name && route.thinking && pi.getThinkingLevel() !== route.thinking) {
+					pi.setThinkingLevel(route.thinking);
 					applied = true;
 				}
 			} catch (e) {
 				reason += `; switch failed: ${e instanceof Error ? e.message : String(e)}`;
-				nextPin = pinnedTier;
+				nextPin = pinnedRoute;
 			}
 		}
-		pinnedTier = nextPin;
+		pinnedRoute = nextPin;
+
+		if (route && config.stamp) {
+			const target = routeModels[route.name] ?? currentModel;
+			const via = cls.matched?.length ? `matched: ${cls.matched.map(k => `"${k}"`).join(", ")}` : `decided by ${engineLabel}`;
+			const thinking = route.thinking ?? currentThinking;
+			pendingStamp = `${mode === "shadow" ? "Switchboard (shadow, not applied)" : "Switchboard"}: ${route.name} → ${target} · thinking ${thinking} · ${via}`;
+		} else {
+			pendingStamp = undefined;
+		}
 
 		handledPrompt = event.prompt;
 		const id = crypto.randomUUID();
@@ -121,18 +157,19 @@ export default function switchboard(pi: ExtensionAPI) {
 			mode,
 			engine: engineLabel,
 			engineLatencyMs,
-			engineCostUsd: cls?.costUsd,
+			engineCostUsd: cls.costUsd,
 			currentModel,
 			currentThinking,
-			tierModels,
-			classification: cls && {
+			routeModels,
+			classification: {
 				newTask: cls.newTask,
 				newTaskConfidence: cls.newTaskConfidence,
-				tier: cls.tier,
-				tierConfidence: cls.tierConfidence,
+				route: cls.route,
+				routeConfidence: cls.routeConfidence,
+				matched: cls.matched,
 			},
-			desiredTier: verdict.desiredTier,
-			pinnedTier,
+			desiredRoute: verdict.desiredRoute,
+			pinnedRoute,
 			taskStart: verdict.taskStart,
 			applied,
 			wouldSwitch: verdict.switchModel,
@@ -142,6 +179,20 @@ export default function switchboard(pi: ExtensionAPI) {
 			promptPreview: config.logPrompts ? event.prompt.slice(0, 120) : undefined,
 		};
 		if (config.logging) appendLog(last);
+	});
+
+	// Stamp the final text of a routed run. Text blocks keep their count and order; only the last one grows.
+	pi.on("assistant_message", async event => {
+		if (!pendingStamp) return;
+		const content = event.message.content;
+		if (!Array.isArray(content) || content.some(b => b.type === "toolCall")) return;
+		const idx = content.findLastIndex(b => b.type === "text");
+		if (idx < 0) return;
+		const stamp = pendingStamp;
+		pendingStamp = undefined;
+		return {
+			content: content.map((b, i) => (i === idx && b.type === "text" ? { ...b, text: `${b.text}\n\n---\n_${stamp}_` } : b)),
+		};
 	});
 
 	pi.on("tool_result", async event => {
@@ -154,6 +205,7 @@ export default function switchboard(pi: ExtensionAPI) {
 		const finished = turn;
 		turn = undefined;
 		handledPrompt = undefined;
+		pendingStamp = undefined;
 		if (!finished || !config.logging) return;
 		appendLog({
 			type: "outcome",
@@ -167,10 +219,27 @@ export default function switchboard(pi: ExtensionAPI) {
 		});
 	});
 
+	/** Edit the raw config file, then reload. Surfaces parse/write errors instead of throwing into the TUI. */
+	const editConfig = (ctx: ExtensionContext, edit: (raw: Record<string, unknown>) => string | undefined) => {
+		try {
+			const raw = readRawConfig();
+			const failure = edit(raw);
+			if (failure) return ctx.ui.notify(`switchboard: ${failure}`, "warning");
+			writeRawConfig(raw);
+			reload(ctx);
+			return true;
+		} catch (e) {
+			ctx.ui.notify(`switchboard: ${e instanceof Error ? e.message : String(e)}`, "error");
+		}
+	};
+
+	const activeSetup = (): string | undefined =>
+		config.activeSetup && config.setups[config.activeSetup] ? config.activeSetup : undefined;
+
 	pi.registerCommand("switchboard", {
-		description: "Model router: on | off | shadow | status | explain | stats | models | reload",
+		description: "Model router: on | off | shadow | status | explain | stats | routes | setups | save | use | reload",
 		handler: async (args, ctx) => {
-			const sub = args.trim().split(/\s+/)[0] || "status";
+			const [sub = "status", ...rest] = args.trim().split(/\s+/);
 			const say = (s: string) => ctx.ui.notify(s, "info");
 			switch (sub) {
 				case "on":
@@ -185,24 +254,51 @@ export default function switchboard(pi: ExtensionAPI) {
 				case "reload":
 					reload(ctx);
 					return say(`switchboard: config reloaded from ${configPath()}`);
-				case "status":
+				case "status": {
+					const d = config.decision.model ? resolveDecisionModel(ctx, config.decision.model) : undefined;
 					return say(
 						[
 							`mode: ${effectiveMode(config, override)}${override ? " (session override)" : ""}`,
-							`decision model: ${config.decision.model}`,
-							`pinned tier: ${pinnedTier ?? "none"}`,
+							`classifier: ${config.decision.model ? `${config.decision.model}${d ? ` [${d.api}]` : " (UNRESOLVED, falls back to keywords)"}` : "keywords"}`,
+							`setup: ${activeSetup() ?? "none (top-level routes)"}`,
+							`pinned route: ${pinnedRoute ?? "none"}`,
 							`current: ${ctx.model ? ref(ctx.model) : "none"} / thinking ${pi.getThinkingLevel()}`,
 							`config: ${configPath()}`,
 						].join("\n"),
 					);
-				case "models": {
-					const rows = TIERS.map(t => {
-						const m = ctx.models.resolve(config.tiers[t].model);
-						return `${t}: ${config.tiers[t].model} -> ${m ? ref(m) : "UNRESOLVED"} (${config.tiers[t].thinking ?? "default"})`;
+				}
+				case "routes": {
+					const rows = resolveRoutes(config).map(r => {
+						const m = r.model ? ctx.models.resolve(r.model) : undefined;
+						const model = r.model ? `${r.model} -> ${m ? ref(m) : "UNRESOLVED"}` : "keep current model";
+						return `${r.name} (rank ${r.rank}): ${model}, thinking ${r.thinking ?? "unchanged"}, ${r.keywords.length} keywords`;
 					});
-					const d = resolveDecisionModel(ctx, config.decision.model);
-					rows.push(`decision: ${config.decision.model} -> ${d ? `${ref(d)} [${d.api}]` : "UNRESOLVED"}`);
 					return say(rows.join("\n"));
+				}
+				case "setups": {
+					const names = Object.keys(config.setups);
+					if (names.length === 0) return say("switchboard: no setups. Use /switchboard save <name>");
+					return say(names.map(n => `${n === activeSetup() ? "*" : " "} ${n}`).join("\n"));
+				}
+				case "save": {
+					const name = rest[0];
+					if (!name || !/^[\w.-]+$/.test(name) || name === "none") {
+						return ctx.ui.notify("switchboard: usage /switchboard save <name> (letters, digits, . _ -)", "warning");
+					}
+					const snapshot: Record<string, RouteConfig> = Object.fromEntries(
+						resolveRoutes(config).map(r => [
+							r.name,
+							{ model: r.model, thinking: r.thinking, keywords: r.keywords, description: r.description, rank: r.rank },
+						]),
+					);
+					const ok = editConfig(ctx, raw => void saveSetup(raw, name, snapshot));
+					return ok && say(`switchboard: saved and activated setup "${name}"`);
+				}
+				case "use": {
+					const name = rest[0];
+					if (!name) return say(`setups: ${Object.keys(config.setups).join(", ") || "(none)"}; use <name> or use none`);
+					const ok = editConfig(ctx, raw => (useSetup(raw, name) ? undefined : `no setup named "${name}"`));
+					return ok && say(name === "none" ? "switchboard: using top-level routes" : `switchboard: using setup "${name}"`);
 				}
 				case "stats":
 					return say(summarize(readLog()));
@@ -211,19 +307,51 @@ export default function switchboard(pi: ExtensionAPI) {
 					const c = last.classification;
 					return say(
 						[
-							`mode ${last.mode}; engine ${last.engine} (${last.engineLatencyMs}ms)`,
+							`mode ${last.mode}; classifier ${last.engine} (${last.engineLatencyMs}ms)`,
 							c
-								? `classified: ${c.newTask ? "new task" : "follow-up"} (${c.newTaskConfidence.toFixed(2)}), tier ${c.tier} (${c.tierConfidence.toFixed(2)})`
-								: `classification failed: ${last.error ?? "unknown"}`,
+								? `classified: ${c.newTask ? "new task" : "follow-up"} (${c.newTaskConfidence.toFixed(2)}), route ${c.route} (${c.routeConfidence.toFixed(2)})${c.matched?.length ? `, matched ${c.matched.join(", ")}` : ""}`
+								: "no classification",
+							...(last.error ? [`classifier error: ${last.error}`] : []),
 							`was on ${last.currentModel} (${last.contextTokens ?? "?"} ctx tokens)`,
 							`decision: ${last.reason}`,
 							last.applied ? "applied" : last.wouldSwitch ? "NOT applied (shadow)" : "no switch",
 						].join("\n"),
 					);
 				}
+				case "help":
+					return say(USAGE);
 				default:
-					return ctx.ui.notify(`switchboard: unknown subcommand "${sub}"`, "warning");
+					return ctx.ui.notify(`switchboard: unknown subcommand "${sub}"\n${USAGE}`, "warning");
 			}
+		},
+	});
+
+	pi.registerCommand("switchboard-setup", {
+		description: "Interactively pick a model and thinking level for each route",
+		handler: async (_args, ctx: ExtensionCommandContext) => {
+			if (!ctx.hasUI) return ctx.ui.notify("switchboard-setup needs an interactive session", "warning");
+			const refs = ctx.models.list().map(ref).sort();
+			const setup = activeSetup();
+			const patches: [string, RouteConfig][] = [];
+			for (const r of resolveRoutes(config)) {
+				const keepModel = `keep (${r.model ?? "current model"})`;
+				const model = await ctx.ui.select(`Route "${r.name}": model`, [keepModel, "(current model: no switch)", ...refs]);
+				if (model === undefined) return ctx.ui.notify("switchboard: setup cancelled; nothing saved", "info");
+				const keepThinking = `keep (${r.thinking ?? "unchanged"})`;
+				const thinking = await ctx.ui.select(`Route "${r.name}": thinking`, [keepThinking, "(unchanged)", ...THINKING_LEVELS]);
+				if (thinking === undefined) return ctx.ui.notify("switchboard: setup cancelled; nothing saved", "info");
+				const patch: RouteConfig = {};
+				if (model === "(current model: no switch)") patch.model = "";
+				else if (model !== keepModel) patch.model = model;
+				if (thinking !== keepThinking && thinking !== "(unchanged)") patch.thinking = thinking as ThinkingLevel;
+				if (Object.keys(patch).length) patches.push([r.name, patch]);
+			}
+			if (patches.length === 0) return ctx.ui.notify("switchboard: no changes", "info");
+			const ok = editConfig(ctx, raw => {
+				for (const [name, patch] of patches) patchRoute(raw, name, patch, setup);
+				return undefined;
+			});
+			if (ok) ctx.ui.notify(`switchboard: updated ${patches.length} route(s) in ${setup ? `setup "${setup}"` : "top-level routes"}`, "info");
 		},
 	});
 }

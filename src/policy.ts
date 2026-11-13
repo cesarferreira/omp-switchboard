@@ -1,22 +1,30 @@
-import { type Classification, type SwitchboardConfig, type Tier, tierRank } from "./types";
+import type { Classification, SwitchboardConfig } from "./types";
+
+export interface PolicyRoute {
+	name: string;
+	rank: number;
+	/** The route names a model (as opposed to "keep the current model"). */
+	hasModel: boolean;
+	/** Resolved `provider/id`; undefined when the route names no model or the model cannot be resolved. */
+	target: string | undefined;
+}
 
 export interface PolicyInput {
 	cls: Classification | undefined;
-	/** Tier pinned for the running task, if any. */
-	pinnedTier: Tier | undefined;
+	/** Route pinned for the running task, if any. */
+	pinnedRoute: string | undefined;
 	/** `provider/id` of the live model. */
 	currentModel: string;
-	/** Resolved `provider/id` per tier; undefined when the tier's model cannot be resolved. */
-	tierModels: Record<Tier, string | undefined>;
+	routes: PolicyRoute[];
 	contextTokens: number | undefined;
 	config: SwitchboardConfig["routing"];
 }
 
 export interface Verdict {
-	/** Tier to pin afterwards (unchanged pin when the request was not acted on). */
-	pinnedTier: Tier | undefined;
-	/** Tier the router wants, if any. */
-	desiredTier: Tier | undefined;
+	/** Route to pin afterwards (unchanged when the request was not acted on). */
+	pinnedRoute: string | undefined;
+	/** Route the router wants, if any. */
+	desiredRoute: string | undefined;
 	switchModel: boolean;
 	taskStart: boolean;
 	reason: string;
@@ -24,64 +32,66 @@ export interface Verdict {
 
 export function decide(i: PolicyInput): Verdict {
 	const keep = (reason: string, taskStart = false): Verdict => ({
-		pinnedTier: i.pinnedTier,
-		desiredTier: undefined,
+		pinnedRoute: i.pinnedRoute,
+		desiredRoute: undefined,
 		switchModel: false,
 		taskStart,
 		reason,
 	});
 	const { cls, config } = i;
-	if (!cls) return keep("decision engine unavailable; keeping current model");
+	if (!cls) return keep("classifier unavailable; keeping current model");
+
+	const byName = new Map(i.routes.map(r => [r.name, r]));
+	const wanted = byName.get(cls.route);
+	if (!wanted) return keep(`unknown route "${cls.route}"; keeping current model`);
+	const pinned = i.pinnedRoute === undefined ? undefined : byName.get(i.pinnedRoute);
 
 	const taskStart =
-		i.pinnedTier === undefined ||
-		!config.sticky ||
-		(cls.newTask && cls.newTaskConfidence >= config.minConfidence);
+		pinned === undefined || !config.sticky || (cls.newTask && cls.newTaskConfidence >= config.minConfidence);
 
-	let desired: Tier;
+	let desired = wanted;
 	let why: string;
 	if (taskStart) {
-		if (cls.tierConfidence < config.minConfidence) {
-			return keep(`low confidence (${cls.tierConfidence.toFixed(2)}) for ${cls.tier}; keeping current model`, true);
+		if (cls.routeConfidence < config.minConfidence) {
+			return keep(`low confidence (${cls.routeConfidence.toFixed(2)}) for ${cls.route}; keeping current model`, true);
 		}
-		desired = cls.tier;
-		why = `new task classified ${cls.tier}`;
+		why = `new task routed to ${desired.name}`;
 	} else if (
+		pinned &&
 		config.allowEscalation &&
-		tierRank(cls.tier) > tierRank(i.pinnedTier!) &&
-		cls.tierConfidence >= config.minConfidence
+		wanted.rank > pinned.rank &&
+		cls.routeConfidence >= config.minConfidence
 	) {
-		desired = cls.tier;
-		why = `follow-up escalated ${i.pinnedTier} -> ${cls.tier}`;
+		why = `follow-up escalated ${pinned.name} -> ${desired.name}`;
 	} else {
-		return keep(`follow-up; task stays pinned to ${i.pinnedTier}`);
+		return keep(`follow-up; task stays on ${i.pinnedRoute}`);
 	}
 
-	const target = i.tierModels[desired];
-	if (!target) {
-		return { ...keep(`no resolvable model for tier ${desired}; keeping current model`, taskStart) };
+	if (desired.hasModel && !desired.target) {
+		return keep(`route ${desired.name}: model cannot be resolved; keeping current model`, taskStart);
 	}
 
-	const sameModel = target === i.currentModel;
-	const isUpgrade = i.pinnedTier !== undefined && tierRank(desired) > tierRank(i.pinnedTier);
+	const sameModel = desired.target === undefined || desired.target === i.currentModel;
+	const isUpgrade = pinned !== undefined && desired.rank > pinned.rank;
+	const maxRank = Math.max(...i.routes.map(r => r.rank));
 	if (
 		!sameModel &&
 		config.cacheAware &&
 		(i.contextTokens ?? 0) > config.cacheGuardTokens &&
-		desired !== "deep" &&
-		!isUpgrade
+		!isUpgrade &&
+		!(pinned === undefined && desired.rank >= maxRank)
 	) {
 		return keep(
-			`cache guard: ${i.contextTokens} context tokens > ${config.cacheGuardTokens}; not switching to ${target} for ${desired}`,
+			`cache guard: ${i.contextTokens} context tokens > ${config.cacheGuardTokens}; not switching to ${desired.target} for ${desired.name}`,
 			taskStart,
 		);
 	}
 
 	return {
-		pinnedTier: desired,
-		desiredTier: desired,
+		pinnedRoute: desired.name,
+		desiredRoute: desired.name,
 		switchModel: !sameModel,
 		taskStart,
-		reason: sameModel ? `${why}; already on ${target}` : `${why}; switching to ${target}`,
+		reason: sameModel ? `${why}; staying on ${i.currentModel}` : `${why}; switching to ${desired.target}`,
 	};
 }

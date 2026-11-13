@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { isObj } from "./config";
-import type { Snapshot, Tier } from "./types";
+import type { Snapshot } from "./types";
 
 const MAX_MESSAGE_CHARS = 1200;
 
@@ -33,7 +33,7 @@ export function buildSnapshot(
 	ctx: ExtensionContext,
 	prompt: string,
 	currentModel: string,
-	pinnedTier: Tier | undefined,
+	pinnedRoute: string | undefined,
 	historyMessages: number,
 ): Snapshot {
 	return {
@@ -41,6 +41,6 @@ export function buildSnapshot(
 		latestRequest: clip(prompt),
 		recent: recentMessages(ctx, historyMessages),
 		contextTokens: ctx.getContextUsage()?.tokens ?? undefined,
-		pinnedTier,
+		pinnedRoute,
 	};
 }
