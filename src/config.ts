@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG: SwitchboardConfig = {
 	},
 	routes: {},
 	setups: {},
-	stamp: true,
+	stamp: false,
 	logging: true,
 	logPrompts: false,
 };

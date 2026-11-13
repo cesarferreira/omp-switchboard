@@ -56,6 +56,21 @@ export default function switchboard(pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_e, ctx) => {
+		// Assistant-text renderers only run while `extensionRenderers.assistantText` is on (default off).
+		// `stamp: true` is the user's opt-in, so turn that setting on for this process unless they set it.
+		// The registry subpath is documented but not part of the stable root exports, so it is loaded
+		// lazily: if it ever moves, the stamp is lost and routing keeps working.
+		if (config.stamp) {
+			try {
+				const { lookup } = await import("@oh-my-pi/pi-coding-agent/config/registry");
+				const setting = lookup("extensionRenderers.assistantText");
+				if (setting && !setting.isConfigured(pi.pi.settings)) setting.override(pi.pi.settings, true);
+			} catch (e) {
+				pi.logger.warn("switchboard: cannot enable reply renderers; enable Tools > Extensions > Extension Reply Renderers for the stamp", {
+					error: String(e),
+				});
+			}
+		}
 		pinnedRoute = undefined;
 		last = undefined;
 		handledPrompt = undefined;

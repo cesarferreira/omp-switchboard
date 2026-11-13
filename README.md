@@ -39,7 +39,7 @@ All keys optional. `${VAR}` is expanded in strings.
     "research":   { "model": "bifrost/gpt-6-sol", "thinking": "xhigh", "keywords": ["benchmark"],
                     "description": "Comparing libraries or surveying the state of the art.", "rank": 3 }
   },
-  "stamp": true,
+  "stamp": false,
   "logging": true,
   "logPrompts": false
 }
@@ -87,14 +87,16 @@ Stored under `setups` (same `routes` shape) with `activeSetup` naming the one in
 
 ## Response stamp
 
-With `stamp: true`, the TUI draws a line under the final text of each routed run:
+With `"stamp": true` (default `false`), the TUI draws a line under the final text of each routed run:
 
 ```
 ---
 _Switchboard: quick-edit → bifrost/gpt-6-luna · thinking low · matched: "rename"_
 ```
 
-In shadow mode it reads "Switchboard (shadow, not applied)". The stamp is display-only: it is drawn by an assistant-text renderer, so the session, exports and model context keep the reply exactly as written. It appears in the TUI only (not in print/RPC output) and is not restored when you resume a session. Set `stamp: false` to turn it off.
+In shadow mode it reads "Switchboard (shadow, not applied)". The stamp is display-only: it is drawn by an assistant-text renderer, so the session, exports and model context keep the reply exactly as written. It appears in the TUI only (not in print/RPC output) and is not restored when you resume a session.
+
+**Opt-in.** Reply renderers only run while OMP's `extensionRenderers.assistantText` setting is on (Tools → Extensions → Extension Reply Renderers), and turning it on changes streaming and scrollback behaviour for all replies and all extensions' renderers. Setting `"stamp": true` is your consent: Switchboard then turns that setting on for the running process (never persisted, and only if you have not configured it yourself). If OMP moves the setting's registry module, Switchboard logs a warning and keeps routing; enable the setting by hand to get the stamp back.
 
 ## Log
 
