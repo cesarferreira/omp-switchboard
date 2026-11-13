@@ -108,6 +108,15 @@ describe("decide", () => {
 		expect(decide(base({ cls: cls({ route: "nope" }) })).switchModel).toBe(false);
 	});
 
+	test("context guard refuses a model whose window cannot hold the conversation", () => {
+		const small = routes.map(r => (r.name === "quick-edit" ? { ...r, contextWindow: 200_000 } : r));
+		const over = decide(base({ routes: small, contextTokens: 170_000, cls: cls({ route: "quick-edit" }), config: { ...DEFAULT_CONFIG.routing, cacheAware: false } }));
+		expect(over.switchModel).toBe(false);
+		expect(over.reason).toContain("context guard");
+		const under = decide(base({ routes: small, contextTokens: 150_000, cls: cls({ route: "quick-edit" }), config: { ...DEFAULT_CONFIG.routing, cacheAware: false } }));
+		expect(under.switchModel).toBe(true);
+	});
+
 	test("route whose model cannot be resolved keeps current model", () => {
 		const broken = routes.map(r => (r.name === "plan" ? { ...r, target: undefined } : r));
 		const v = decide(base({ routes: broken, cls: cls({ route: "plan" }) }));

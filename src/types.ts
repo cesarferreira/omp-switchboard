@@ -48,6 +48,8 @@ export interface SwitchboardConfig {
 		/** Refuse non-escalating model switches when the conversation is large. */
 		cacheAware: boolean;
 		cacheGuardTokens: number;
+		/** Refuse a switch when the conversation exceeds this fraction of the target model's context window. */
+		contextWindowFraction: number;
 		/** Below this decision-model confidence, keep the current model. */
 		minConfidence: number;
 		/** Number of recent messages given to the decision model. */

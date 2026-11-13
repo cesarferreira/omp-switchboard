@@ -88,7 +88,13 @@ export default function switchboard(pi: ExtensionAPI) {
 		);
 		const policyRoutes: PolicyRoute[] = routes.map(r => {
 			const m = resolved.get(r.name);
-			return { name: r.name, rank: r.rank, hasModel: r.model !== undefined, target: m && ref(m) };
+			return {
+				name: r.name,
+				rank: r.rank,
+				hasModel: r.model !== undefined,
+				target: m && ref(m),
+				contextWindow: m?.contextWindow ?? undefined,
+			};
 		});
 		const routeModels = Object.fromEntries(policyRoutes.map(r => [r.name, r.target]));
 

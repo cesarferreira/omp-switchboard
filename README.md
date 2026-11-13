@@ -30,6 +30,7 @@ All keys optional. `${VAR}` is expanded in strings.
     "allowEscalation": true,
     "cacheAware": true,
     "cacheGuardTokens": 60000,
+    "contextWindowFraction": 0.8,
     "minConfidence": 0.6,
     "historyMessages": 6
   },
@@ -82,6 +83,7 @@ Stored under `setups` (same `routes` shape) with `activeSetup` naming the one in
 - A prompt starts a task when nothing is pinned or the classifier is confident it is a new task. Otherwise the pinned route stays (so "yes, continue" does not re-route).
 - With a decision model, a follow-up can escalate to a higher-`rank` route (never down) when confident.
 - Cache guard: above `cacheGuardTokens` of context, non-escalating model changes are refused because they would discard the prompt cache.
+- Context guard: a switch is refused when the conversation is larger than `contextWindowFraction` (default 80%) of the target model's context window, so a route with a small-window model cannot be entered from a long session.
 - Below `minConfidence`, an engine error, or an unresolvable route model: the current model is kept.
 - Subagents are never routed.
 

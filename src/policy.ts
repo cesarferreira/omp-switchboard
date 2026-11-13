@@ -7,6 +7,8 @@ export interface PolicyRoute {
 	hasModel: boolean;
 	/** Resolved `provider/id`; undefined when the route names no model or the model cannot be resolved. */
 	target: string | undefined;
+	/** Context window of the target model, when known. */
+	contextWindow?: number;
 }
 
 export interface PolicyInput {
@@ -72,6 +74,13 @@ export function decide(i: PolicyInput): Verdict {
 	}
 
 	const sameModel = desired.target === undefined || desired.target === i.currentModel;
+	const windowLimit = desired.contextWindow === undefined ? undefined : desired.contextWindow * config.contextWindowFraction;
+	if (!sameModel && windowLimit !== undefined && (i.contextTokens ?? 0) > windowLimit) {
+		return keep(
+			`context guard: ${i.contextTokens} tokens exceed ${Math.round(config.contextWindowFraction * 100)}% of ${desired.target}'s ${desired.contextWindow}-token window; not switching for ${desired.name}`,
+			taskStart,
+		);
+	}
 	const isUpgrade = pinned !== undefined && desired.rank > pinned.rank;
 	const maxRank = Math.max(...i.routes.map(r => r.rank));
 	if (

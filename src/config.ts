@@ -12,6 +12,7 @@ export const DEFAULT_CONFIG: SwitchboardConfig = {
 		allowEscalation: true,
 		cacheAware: true,
 		cacheGuardTokens: 60_000,
+		contextWindowFraction: 0.8,
 		minConfidence: 0.6,
 		historyMessages: 6,
 	},
