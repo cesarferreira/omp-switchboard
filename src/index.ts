@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
 import {
 	configPath,
 	effectiveMode,
@@ -45,6 +46,8 @@ export default function switchboard(pi: ExtensionAPI) {
 	/** Display-only stamps keyed by the final assistant message's timestamp. */
 	const stamps = new Map<number, string>();
 	const keywords = new KeywordEngine();
+	const rendererSetting = lookup("extensionRenderers.assistantText");
+	const rendererSettingOn = (): boolean => rendererSetting?.get(pi.pi.settings) === true;
 
 	pi.setLabel("Switchboard");
 
@@ -56,20 +59,10 @@ export default function switchboard(pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_e, ctx) => {
-		// Assistant-text renderers only run while `extensionRenderers.assistantText` is on (default off).
+		// Reply renderers only run while `extensionRenderers.assistantText` is on (default off).
 		// `stamp: true` is the user's opt-in, so turn that setting on for this process unless they set it.
-		// The registry subpath is documented but not part of the stable root exports, so it is loaded
-		// lazily: if it ever moves, the stamp is lost and routing keeps working.
-		if (config.stamp) {
-			try {
-				const { lookup } = await import("@oh-my-pi/pi-coding-agent/config/registry");
-				const setting = lookup("extensionRenderers.assistantText");
-				if (setting && !setting.isConfigured(pi.pi.settings)) setting.override(pi.pi.settings, true);
-			} catch (e) {
-				pi.logger.warn("switchboard: cannot enable reply renderers; enable Tools > Extensions > Extension Reply Renderers for the stamp", {
-					error: String(e),
-				});
-			}
+		if (config.stamp && rendererSetting && !rendererSetting.isConfigured(pi.pi.settings)) {
+			rendererSetting.override(pi.pi.settings, true);
 		}
 		pinnedRoute = undefined;
 		last = undefined;
@@ -289,6 +282,7 @@ export default function switchboard(pi: ExtensionAPI) {
 							`mode: ${effectiveMode(config, override)}${override ? " (session override)" : ""}`,
 							`classifier: ${config.decision.model ? `${config.decision.model}${d ? ` [${d.api}]` : " (UNRESOLVED, falls back to keywords)"}` : "keywords"}`,
 							`setup: ${activeSetup() ?? "none (top-level routes)"}`,
+							`stamp: ${config.stamp ? (rendererSettingOn() ? "on" : "on, but Extension Reply Renderers is off (Tools > Extensions)") : "off"}`,
 							`pinned route: ${pinnedRoute ?? "none"}`,
 							`current: ${ctx.model ? ref(ctx.model) : "none"} / thinking ${pi.getThinkingLevel()}`,
 							`config: ${configPath()}`,
