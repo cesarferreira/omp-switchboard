@@ -229,6 +229,8 @@ export default function switchboard(pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (e, ctx) => {
+		// The loop has not settled (automatic continuation or waiting on background jobs): the run is still open.
+		if (e.willContinue) return;
 		const finished = turn;
 		turn = undefined;
 		handledPrompt = undefined;
