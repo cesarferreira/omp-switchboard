@@ -190,13 +190,15 @@ export default function switchboard(pi: ExtensionAPI) {
 
 	// The stamp is display-only: remember it per final assistant message and draw it in the renderer,
 	// so the session, exports and model context keep the reply as written.
-	pi.on("assistant_message", async event => {
+	pi.on("assistant_message", async (event, ctx) => {
 		if (!pendingStamp) return;
 		const { content, timestamp } = event.message;
 		if (!Array.isArray(content) || content.some(b => b.type === "toolCall") || !content.some(b => b.type === "text")) return;
 		stamps.set(timestamp, pendingStamp);
 		pendingStamp = undefined;
 		if (stamps.size > MAX_STAMPS) stamps.delete(stamps.keys().next().value!);
+		// The renderer caches a sealed block; ask for a redraw now that the stamp exists.
+		ctx.ui.rerenderMessage(timestamp);
 	});
 
 	pi.registerAssistantTextRenderer(({ message, contentIndex, text, streaming }) => {
