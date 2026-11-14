@@ -12,7 +12,7 @@ omp plugin link /path/to/omp-switchboard     # or: omp -e /path/to/omp-switchboa
 
 It starts in `shadow` mode (logs what it would do, never switches). `/switchboard on` enables switching for the session; `"mode": "auto"` makes it permanent.
 
-**Status: experimental; auto mode is opt-in.** Routing overhead and correct-looking categories do not establish lower total cost or equal task quality. The measured starter run below did not beat the fixed-model baselines.
+**Status: experimental; auto mode is opt-in.** Routing overhead and correct-looking categories do not establish lower total cost or equal task quality. The bundled answer check below is a strict JSON-contract smoke test, not evidence that the model-to-route assignments are good or bad.
 
 ## How routes are chosen
 
@@ -173,7 +173,7 @@ A fixture's `currentRoute` must name a route with a resolvable model, because it
 
 Complete JSON reports are written under `~/.omp/agent/switchboard/evaluate-*.json` or `benchmark-*.json` (respecting `PI_CODING_AGENT_DIR`). The command prints the report path and summary. Routing reports omit raw prompts/history; benchmark reports contain model answers. Do not commit private prompts or reports unintentionally. Manual reports are created even with `logging: false`.
 
-**Limits:** this is not a full coding-agent benchmark. Each answer task starts without inherited conversation or a pin, uses no tools, and does not reproduce multi-turn cache/compaction/retry behavior. Provider caches and load are not controlled. A high starter-corpus score or a cheaper short answer is not proof of equal repository-level task quality or lower long-session cost.
+**Smoke-test scope:** the six answer tasks are single-turn coding puzzles and transformations, not representative planning, repository implementation, investigation or rename workflows. They check structural JSON answers and output-format compliance. A correct object embedded in extra prose is an answer-format failure under the explicit JSON-only contract; it is not proof of a reasoning failure. Each task starts without inherited conversation or a pin, uses no tools, and does not reproduce multi-turn cache/compaction/retry behavior. Provider caches and load are not controlled. These results cannot validate route-to-model assignments or predict long-session quality/cost.
 
 Use the development cases to improve descriptions, then evaluate untouched, representative held-out requests. For a deployment decision, also run complete disposable agent tasks against fixed-model baselines and compare task completion/tests, total normalized cost and latency, including routing, retries and cache effects. The plugin cannot infer that counterfactual from normal logs.
 
@@ -184,20 +184,20 @@ bun test
 bun run check
 ```
 
-### One measured starter run
+### One measured routing evaluation and answer-format smoke run
 
 Using the configured native `bifrost-decisions/gpt-6-luna` judge, the bundled routing corpus produced **20/21 route matches, 18/21 intent matches and 16/21 desired policy outcomes**, with no classifier errors. Some otherwise correctly named handoffs were conservatively refused because confidence did not meet the existing threshold. These labels are synthetic and these counts are not a production-accuracy estimate; they were not used to lower the threshold or relabel failures.
 
-The separate six-task JSON-answer benchmark used SOL/high for `plan`, Sonnet/medium for `default`, and Luna/off for `quick-edit`:
+The separate six-task **strict JSON-answer smoke test** used SOL/high for `plan`, Sonnet/medium for `default`, and Luna/off for `quick-edit`. These are configured paths being exercised, not evaluations of their respective planning/implementation capabilities:
 
-| Path | Correct answers | Errors | Normalized cost (USD) | Mean latency (ms) |
+| Path | Strict JSON-contract passes | Answer-format failures | Normalized cost (USD) | Mean latency (ms) |
 |---|---:|---:|---:|---:|
 | Routed | 3 | 3 | 0.006522 | 2151 |
 | Fixed `plan` | 6 | 0 | 0.003958 | 2944 |
 | Fixed `default` | 3 | 3 | 0.006838 | 1291 |
 | Fixed `quick-edit` | 6 | 0 | 0.000227 | 1468 |
 
-The errors were invalid-JSON answers and remain failures; they were not filtered out or repaired until the scores looked good. This initial run used the earlier shared 15-second deadline; the current command separates the 60-second completion deadline from classifier timeouts. The gateway reported zero classifier spend for that run, so normalized totals are not audited invoices. On these small tasks, the routed policy was **not** a quality/cost winner. This motivates measuring your mappings and request distribution, not enabling automatic routing by default or concluding that a fixed small model solves long-horizon repository work.
+All observed failures were JSON-parsing failures, not verified reasoning errors. The original reports retained neither the failed reply text nor stop reasons, so it is not possible to determine whether prose/fences, empty content or truncation caused those particular failures, or whether the 4,096-token cap was reached. The numbers are retained rather than repaired or filtered to improve the score. This initial run used the earlier shared 15-second deadline; the current command uses a separate 60-second completion deadline. The gateway reported zero classifier spend for that run, so normalized totals are not audited invoices. Treat this table as harness/output-contract smoke evidence only: it neither justifies nor refutes `plan → SOL` or `implement → Sonnet` assignments.
 
 ## Interactions
 

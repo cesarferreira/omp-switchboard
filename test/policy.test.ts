@@ -150,4 +150,14 @@ describe("decide", () => {
 		expect(decide({ ...input, contextTokens: 70_000 }).reason).toContain("cache guard");
 		expect(decide({ ...input, contextTokens: 170_000 }).reason).toContain("context guard");
 	});
+
+	test("a confident plan-to-implement handoff at 134k tokens is blocked by cache protection, not the window", () => {
+		const models = routes.map(route => route.name === "implement" ? { ...route, contextWindow: 200_000 } : route);
+		const input = base({ routes: models, pinnedRoute: "plan", currentModel: "p/deep", contextTokens: 134_074,
+			cls: cls({ intent: "phase_change", intentConfidence: 0.99, route: "implement", routeConfidence: 0.99 }) });
+		expect(decide(input)).toMatchObject({ pinnedRoute: "plan", switchModel: false, phaseChange: false });
+		expect(decide(input).reason).toContain("cache guard");
+		expect(decide({ ...input, config: { ...input.config, cacheAware: false } }))
+			.toMatchObject({ pinnedRoute: "implement", switchModel: true, phaseChange: true });
+	});
 });
