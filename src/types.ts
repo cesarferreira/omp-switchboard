@@ -11,7 +11,7 @@ export interface RouteConfig {
 	keywords?: string[];
 	/** What the route is for; shown to the decision model. */
 	description?: string;
-	/** Relative strength. A follow-up may escalate to a higher rank, never down. */
+	/** Relative strength for within-phase escalation; explicit phase changes can move either way. */
 	rank?: number;
 }
 
@@ -41,9 +41,9 @@ export interface SwitchboardConfig {
 		timeoutMs: number;
 	};
 	routing: {
-		/** Keep the pinned route across follow-ups; only re-route on a new task. */
+		/** Keep the route within a work phase; confident new tasks or phase changes may re-route. */
 		sticky: boolean;
-		/** In a sticky task, allow moving to a higher-rank route (never lower). */
+		/** Allow automatic higher-rank escalation within a phase. */
 		allowEscalation: boolean;
 		/** Refuse non-escalating model switches when the conversation is large. */
 		cacheAware: boolean;
@@ -81,9 +81,12 @@ export interface Snapshot {
 	pinnedRoute: string | undefined;
 }
 
+export const TASK_INTENTS = ["continue", "phase_change", "new_task"] as const;
+export type TaskIntent = typeof TASK_INTENTS[number];
+
 export interface Classification {
-	newTask: boolean;
-	newTaskConfidence: number;
+	intent: TaskIntent;
+	intentConfidence: number;
 	route: string;
 	routeConfidence: number;
 	/** Keywords that matched (keyword engine only). */

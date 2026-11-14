@@ -1,0 +1,275 @@
+[
+	{
+		"id": "dev-first-message-implement",
+		"split": "development",
+		"latestRequest": "Add a --verbose flag to the CLI that prints each retry attempt with its delay.",
+		"recent": [],
+		"currentRoute": "default",
+		"pinnedRoute": null,
+		"contextTokens": 1200,
+		"expected": { "intent": "new_task", "routes": ["implement"], "pinnedRoute": "implement", "phaseChange": false }
+	},
+	{
+		"id": "dev-first-message-quick-edit",
+		"split": "development",
+		"latestRequest": "Rename the variable `cnt` to `count` in utils/stats.ts.",
+		"recent": [],
+		"currentRoute": "default",
+		"pinnedRoute": null,
+		"contextTokens": 900,
+		"expected": { "intent": "new_task", "routes": ["quick-edit"], "pinnedRoute": "quick-edit", "phaseChange": false }
+	},
+	{
+		"id": "dev-approved-plan-then-implement",
+		"split": "development",
+		"latestRequest": "Looks good, go ahead and implement it.",
+		"recent": [
+			{ "role": "user", "text": "Plan the migration of the job queue from cron to a worker pool." },
+			{
+				"role": "assistant",
+				"text": "Plan: 1) add a Worker class with a lease timeout, 2) move each cron job behind a queue.enqueue call, 3) delete the crontab entries once the pool drains. Want me to proceed?"
+			}
+		],
+		"currentRoute": "plan",
+		"pinnedRoute": "plan",
+		"contextTokens": 18000,
+		"expected": { "intent": "phase_change", "routes": ["implement"], "pinnedRoute": "implement", "phaseChange": true }
+	},
+	{
+		"id": "dev-same-phase-continue-plan",
+		"split": "development",
+		"latestRequest": "What about the failure mode where a worker dies mid-job? Add that to the plan.",
+		"recent": [
+			{ "role": "user", "text": "Plan the migration of the job queue from cron to a worker pool." },
+			{ "role": "assistant", "text": "Plan: 1) add a Worker class with a lease timeout, 2) move each cron job behind queue.enqueue, 3) remove the crontab entries." }
+		],
+		"currentRoute": "plan",
+		"pinnedRoute": "plan",
+		"contextTokens": 15000,
+		"expected": { "intent": "continue", "routes": ["plan"], "pinnedRoute": "plan", "phaseChange": false }
+	},
+	{
+		"id": "dev-quick-edit-local-correction-stays-plan",
+		"split": "development",
+		"latestRequest": "Actually rename that step to 'drain queue' instead of 'flush queue'.",
+		"recent": [
+			{ "role": "user", "text": "Plan the migration of the job queue from cron to a worker pool." },
+			{ "role": "assistant", "text": "Plan: 1) add a Worker class, 2) flush queue before cutover, 3) remove the crontab entries." }
+		],
+		"currentRoute": "plan",
+		"pinnedRoute": "plan",
+		"contextTokens": 15500,
+		"expected": { "intent": "continue", "routes": ["quick-edit"], "pinnedRoute": "plan", "phaseChange": false }
+	},
+	{
+		"id": "dev-ambiguous-approval-stays-put",
+		"split": "development",
+		"latestRequest": "sure",
+		"recent": [
+			{ "role": "user", "text": "Plan the migration of the job queue from cron to a worker pool." },
+			{
+				"role": "assistant",
+				"text": "I can either sketch the lease schema first or start with the Worker class. Which would you like first?"
+			}
+		],
+		"currentRoute": "plan",
+		"pinnedRoute": "plan",
+		"contextTokens": 16000,
+		"expected": { "intent": "continue", "routes": ["plan", "default"], "pinnedRoute": "plan", "phaseChange": false }
+	},
+	{
+		"id": "dev-unrelated-goal-new-task",
+		"split": "development",
+		"latestRequest": "Separately, draft a design for rate limiting on our public API. Compare token bucket and sliding window.",
+		"recent": [
+			{ "role": "user", "text": "Add a --verbose flag to the CLI that prints each retry attempt." },
+			{ "role": "assistant", "text": "Done: src/cli.ts now passes verbose into the retry loop and logs each attempt." }
+		],
+		"currentRoute": "implement",
+		"pinnedRoute": "implement",
+		"contextTokens": 9000,
+		"expected": { "intent": "new_task", "routes": ["plan"], "pinnedRoute": "plan", "phaseChange": false }
+	},
+	{
+		"id": "dev-do-that-then-needs-context",
+		"split": "development",
+		"latestRequest": "Do that, then run the importer tests.",
+		"recent": [
+			{ "role": "user", "text": "Why does the importer drop rows with empty emails?" },
+			{
+				"role": "assistant",
+				"text": "validate() returns early on an empty email and skips the remaining checks. The fix is to skip only the email check and keep validating the other fields."
+			}
+		],
+		"currentRoute": "deep-dive",
+		"pinnedRoute": "deep-dive",
+		"contextTokens": 22000,
+		"expected": { "intent": "phase_change", "routes": ["implement"], "pinnedRoute": "implement", "phaseChange": true }
+	},
+	{
+		"id": "dev-same-change-other-handler-continue",
+		"split": "development",
+		"latestRequest": "Apply the same change to the other handler.",
+		"recent": [
+			{ "role": "user", "text": "Return a 404 when the order does not exist." },
+			{
+				"role": "assistant",
+				"text": "Edited src/handlers/orders.ts: wrapped getOrder in try/catch and return 404 when OrderNotFound is thrown. The refunds handler has the same pattern."
+			}
+		],
+		"currentRoute": "implement",
+		"pinnedRoute": "implement",
+		"contextTokens": 14000,
+		"expected": { "intent": "continue", "routes": ["implement"], "pinnedRoute": "implement", "phaseChange": false }
+	},
+	{
+		"id": "dev-begin-tests-new-phase",
+		"split": "development",
+		"latestRequest": "Now let's write the tests first, then build against them.",
+		"recent": [
+			{ "role": "user", "text": "Think through the design for the pagination cursor format." },
+			{ "role": "assistant", "text": "I recommend an opaque base64 cursor wrapping (created_at, id). It keeps ordering stable under inserts." }
+		],
+		"currentRoute": "plan",
+		"pinnedRoute": "plan",
+		"contextTokens": 12000,
+		"expected": { "intent": "phase_change", "routes": ["implement"], "pinnedRoute": "implement", "phaseChange": true }
+	},
+	{
+		"id": "dev-add-test-same-phase-counterexample",
+		"split": "development",
+		"latestRequest": "Also add a test for the empty-input case.",
+		"recent": [
+			{ "role": "user", "text": "Implement the CSV parser for quoted fields." },
+			{ "role": "assistant", "text": "Implemented parseCsv in src/csv.ts and added tests for quoted fields and escaped quotes." }
+		],
+		"currentRoute": "implement",
+		"pinnedRoute": "implement",
+		"contextTokens": 20000,
+		"expected": { "intent": "continue", "routes": ["implement"], "pinnedRoute": "implement", "phaseChange": false }
+	},
+	{
+		"id": "dev-cache-guard-blocks-phase-change",
+		"split": "development",
+		"latestRequest": "Great, implement it now.",
+		"recent": [
+			{ "role": "user", "text": "Plan the storage layer rewrite." },
+			{ "role": "assistant", "text": "Plan: introduce a Store interface, port the SQLite code behind it, then add the new backend. Shall I implement?" }
+		],
+		"currentRoute": "plan",
+		"pinnedRoute": "plan",
+		"contextTokens": 90000,
+		"expected": { "intent": "phase_change", "routes": ["implement"], "pinnedRoute": "plan", "phaseChange": false }
+	},
+	{
+		"id": "hold-first-message-explain",
+		"split": "holdout",
+		"latestRequest": "Explain how the retry backoff in src/net/client.ts decides when to give up.",
+		"recent": [],
+		"currentRoute": "default",
+		"pinnedRoute": null,
+		"contextTokens": 800,
+		"expected": { "intent": "new_task", "routes": ["deep-dive"], "pinnedRoute": "deep-dive", "phaseChange": false }
+	},
+	{
+		"id": "hold-first-message-ordinary-question",
+		"split": "holdout",
+		"latestRequest": "What is the difference between a mutex and a semaphore?",
+		"recent": [],
+		"currentRoute": "default",
+		"pinnedRoute": null,
+		"contextTokens": 400,
+		"expected": { "intent": "new_task", "routes": ["default"], "pinnedRoute": "default", "phaseChange": false }
+	},
+	{
+		"id": "hold-root-cause-found-then-fix",
+		"split": "holdout",
+		"latestRequest": "Got it. Fix it.",
+		"recent": [
+			{ "role": "user", "text": "Investigate why users in different tenants sometimes see each other's cached dashboards." },
+			{ "role": "assistant", "text": "Root cause: the dashboard cache key omits the tenant id, so two tenants with the same dashboard id collide." }
+		],
+		"currentRoute": "deep-dive",
+		"pinnedRoute": "deep-dive",
+		"contextTokens": 25000,
+		"expected": { "intent": "phase_change", "routes": ["implement"], "pinnedRoute": "implement", "phaseChange": true }
+	},
+	{
+		"id": "hold-continue-investigation",
+		"split": "holdout",
+		"latestRequest": "And does the same thing happen in the session cache?",
+		"recent": [
+			{ "role": "user", "text": "Investigate why users in different tenants sometimes see each other's cached dashboards." },
+			{ "role": "assistant", "text": "Root cause: the dashboard cache key omits the tenant id, so two tenants with the same dashboard id collide." }
+		],
+		"currentRoute": "deep-dive",
+		"pinnedRoute": "deep-dive",
+		"contextTokens": 25500,
+		"expected": { "intent": "continue", "routes": ["deep-dive"], "pinnedRoute": "deep-dive", "phaseChange": false }
+	},
+	{
+		"id": "hold-unrelated-typo-after-plan",
+		"split": "holdout",
+		"latestRequest": "Unrelated: fix the typo 'recieve' in README.md.",
+		"recent": [
+			{ "role": "user", "text": "Plan the storage layer rewrite." },
+			{ "role": "assistant", "text": "Plan: introduce a Store interface, port the SQLite code behind it, then add the new backend." }
+		],
+		"currentRoute": "plan",
+		"pinnedRoute": "plan",
+		"contextTokens": 12000,
+		"expected": { "intent": "new_task", "routes": ["quick-edit"], "pinnedRoute": "quick-edit", "phaseChange": false }
+	},
+	{
+		"id": "hold-specific-yes-is-approval",
+		"split": "holdout",
+		"latestRequest": "Yes please.",
+		"recent": [
+			{ "role": "user", "text": "Plan the config loader cleanup." },
+			{ "role": "assistant", "text": "That is the plan. Shall I implement the plan as written?" }
+		],
+		"currentRoute": "plan",
+		"pinnedRoute": "plan",
+		"contextTokens": 10000,
+		"expected": { "intent": "phase_change", "routes": ["implement"], "pinnedRoute": "implement", "phaseChange": true }
+	},
+	{
+		"id": "hold-not-yet-stays-in-plan",
+		"split": "holdout",
+		"latestRequest": "Not yet. First compare the two queue libraries.",
+		"recent": [
+			{ "role": "user", "text": "Plan the job queue migration." },
+			{ "role": "assistant", "text": "Plan drafted. Shall I implement it?" }
+		],
+		"currentRoute": "plan",
+		"pinnedRoute": "plan",
+		"contextTokens": 11000,
+		"expected": { "intent": "continue", "routes": ["plan"], "pinnedRoute": "plan", "phaseChange": false }
+	},
+	{
+		"id": "hold-do-that-then-unresolved-referent",
+		"split": "holdout",
+		"latestRequest": "Do that, then run the tests.",
+		"recent": [
+			{ "role": "user", "text": "Implement the CSV parser for quoted fields." },
+			{ "role": "assistant", "text": "Done." }
+		],
+		"currentRoute": "implement",
+		"pinnedRoute": "implement",
+		"contextTokens": 8000,
+		"expected": { "intent": "continue", "routes": ["implement", "default"], "pinnedRoute": "implement", "phaseChange": false }
+	},
+	{
+		"id": "hold-large-context-rename-follow-up",
+		"split": "holdout",
+		"latestRequest": "Rename `tmp` to `buffer` in that function.",
+		"recent": [
+			{ "role": "user", "text": "Implement streaming decompression for the archive reader." },
+			{ "role": "assistant", "text": "Implemented readEntry in src/archive.ts; the temporary array `tmp` collects chunks before returning." }
+		],
+		"currentRoute": "implement",
+		"pinnedRoute": "implement",
+		"contextTokens": 95000,
+		"expected": { "intent": "continue", "routes": ["quick-edit"], "pinnedRoute": "implement", "phaseChange": false }
+	}
+]

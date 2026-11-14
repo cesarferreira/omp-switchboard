@@ -13,8 +13,8 @@ const routes: PolicyRoute[] = [
 ];
 
 const cls = (o: Partial<Classification> = {}): Classification => ({
-	newTask: false,
-	newTaskConfidence: 0.9,
+	intent: "continue",
+	intentConfidence: 0.9,
 	route: "implement",
 	routeConfidence: 0.9,
 	...o,
@@ -62,7 +62,7 @@ describe("decide", () => {
 	});
 
 	test("confident new task re-routes, including to a lower rank", () => {
-		const v = decide(base({ pinnedRoute: "plan", currentModel: "p/deep", cls: cls({ newTask: true, route: "quick-edit" }) }));
+		const v = decide(base({ pinnedRoute: "plan", currentModel: "p/deep", cls: cls({ intent: "new_task", route: "quick-edit" }) }));
 		expect(v).toMatchObject({ pinnedRoute: "quick-edit", switchModel: true, taskStart: true });
 	});
 
@@ -71,7 +71,7 @@ describe("decide", () => {
 			base({
 				pinnedRoute: "plan",
 				currentModel: "p/deep",
-				cls: cls({ newTask: true, newTaskConfidence: 0.3, route: "quick-edit" }),
+				cls: cls({ intent: "new_task", intentConfidence: 0.3, route: "quick-edit" }),
 			}),
 		);
 		expect(v).toMatchObject({ pinnedRoute: "plan", switchModel: false, taskStart: false });
@@ -84,7 +84,7 @@ describe("decide", () => {
 
 	test("cache guard blocks a downgrade in a large conversation", () => {
 		const v = decide(
-			base({ pinnedRoute: "plan", currentModel: "p/deep", contextTokens: 200_000, cls: cls({ newTask: true, route: "quick-edit" }) }),
+			base({ pinnedRoute: "plan", currentModel: "p/deep", contextTokens: 200_000, cls: cls({ intent: "new_task", route: "quick-edit" }) }),
 		);
 		expect(v).toMatchObject({ pinnedRoute: "plan", switchModel: false });
 		expect(v.reason).toContain("cache guard");
@@ -129,5 +129,25 @@ describe("decide", () => {
 		);
 		const verdict = decide(base({ pinnedRoute: "plan", currentModel: "p/deep", cls: classification }));
 		expect(verdict).toMatchObject({ pinnedRoute: "plan", switchModel: false, taskStart: false });
+	});
+
+	test("approved phase change can move plan to implementation without inventing a new task", () => {
+		const v = decide(base({ pinnedRoute: "plan", currentModel: "p/deep", cls: cls({ intent: "phase_change", route: "implement" }) }));
+		expect(v).toMatchObject({ pinnedRoute: "implement", switchModel: true, taskStart: false, phaseChange: true });
+	});
+
+	test("phase handoffs require both intent and destination confidence", () => {
+		for (const classification of [cls({ intent: "phase_change", intentConfidence: 0.2 }), cls({ intent: "phase_change", routeConfidence: 0.2 })]) {
+			expect(decide(base({ pinnedRoute: "plan", currentModel: "p/deep", cls: classification })))
+				.toMatchObject({ pinnedRoute: "plan", switchModel: false, phaseChange: false });
+		}
+	});
+
+	test("same-rank phase handoffs are allowed but still respect cache and context guards", () => {
+		const equal = [...routes, { name: "research", rank: 3, hasModel: true, target: "p/research", contextWindow: 200_000 }];
+		const input = base({ routes: equal, pinnedRoute: "plan", currentModel: "p/deep", cls: cls({ intent: "phase_change", route: "research" }) });
+		expect(decide(input)).toMatchObject({ pinnedRoute: "research", phaseChange: true, switchModel: true });
+		expect(decide({ ...input, contextTokens: 70_000 }).reason).toContain("cache guard");
+		expect(decide({ ...input, contextTokens: 170_000 }).reason).toContain("context guard");
 	});
 });

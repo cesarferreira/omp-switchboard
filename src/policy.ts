@@ -29,6 +29,8 @@ export interface Verdict {
 	desiredRoute: string | undefined;
 	switchModel: boolean;
 	taskStart: boolean;
+	/** Accepted phase handoff within the same goal, after policy guards. */
+	phaseChange: boolean;
 	reason: string;
 }
 
@@ -38,6 +40,7 @@ export function decide(i: PolicyInput): Verdict {
 		desiredRoute: undefined,
 		switchModel: false,
 		taskStart,
+		phaseChange: false,
 		reason,
 	});
 	const { cls, config } = i;
@@ -49,15 +52,22 @@ export function decide(i: PolicyInput): Verdict {
 	const pinned = i.pinnedRoute === undefined ? undefined : byName.get(i.pinnedRoute);
 
 	const taskStart =
-		pinned === undefined || !config.sticky || (cls.newTask && cls.newTaskConfidence >= config.minConfidence);
+		pinned === undefined || !config.sticky || (cls.intent === "new_task" && cls.intentConfidence >= config.minConfidence);
 
 	let desired = wanted;
 	let why: string;
+	let phaseChange = false;
 	if (taskStart) {
 		if (cls.routeConfidence < config.minConfidence) {
 			return keep(`low confidence (${cls.routeConfidence.toFixed(2)}) for ${cls.route}; keeping current model`, true);
 		}
 		why = `new task routed to ${desired.name}`;
+	} else if (
+		pinned && wanted.name !== pinned.name && cls.intent === "phase_change"
+		&& cls.intentConfidence >= config.minConfidence && cls.routeConfidence >= config.minConfidence
+	) {
+		phaseChange = true;
+		why = `phase change ${pinned.name} -> ${desired.name}`;
 	} else if (
 		pinned &&
 		config.allowEscalation &&
@@ -101,6 +111,7 @@ export function decide(i: PolicyInput): Verdict {
 		desiredRoute: desired.name,
 		switchModel: !sameModel,
 		taskStart,
+		phaseChange,
 		reason: sameModel ? `${why}; staying on ${i.currentModel}` : `${why}; switching to ${desired.target}`,
 	};
 }

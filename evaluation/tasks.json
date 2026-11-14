@@ -1,0 +1,32 @@
+[
+	{
+		"id": "trace-loop-accumulator",
+		"prompt": "Read this JavaScript and work out the return value by hand; do not run it.\n\nfunction f(xs) {\n  let acc = 0;\n  for (const x of xs) {\n    if (x % 2 === 0) acc += x;\n    else acc -= 1;\n  }\n  return acc;\n}\n\nWhat does f([1, 2, 3, 4, 5, 6]) return? Respond with only a JSON object of the form {\"result\": <number>}.",
+		"expected": { "result": 9 }
+	},
+	{
+		"id": "snake-to-camel",
+		"prompt": "Convert each snake_case identifier to camelCase, keeping the order: user_id, created_at, is_active, http_status_code. Respond with only a JSON object of the form {\"names\": [<string>, ...]}.",
+		"expected": { "names": ["userId", "createdAt", "isActive", "httpStatusCode"] }
+	},
+	{
+		"id": "python-negative-zero-slice",
+		"prompt": "Read this Python and work out the results by hand; do not run it.\n\ndef last_n(items, n):\n    return items[-n:]\n\nWhat do last_n([1, 2, 3], 2) and last_n([1, 2, 3], 0) return? Respond with only a JSON object of the form {\"two\": <list>, \"zero\": <list>}.",
+		"expected": { "two": [2, 3], "zero": [1, 2, 3] }
+	},
+	{
+		"id": "js-default-sort",
+		"prompt": "Work out the result of each JavaScript expression by hand; do not run them.\n\nA: [\"10\", \"9\", \"1\", \"100\"].sort()\nB: [10, 9, 1, 100].sort((a, b) => a - b)\n\nRespond with only a JSON object of the form {\"A\": <array>, \"B\": <array>}.",
+		"expected": { "A": ["1", "10", "100", "9"], "B": [1, 9, 10, 100] }
+	},
+	{
+		"id": "flatten-json-paths",
+		"prompt": "Flatten this JSON object into a single-level object. Join nested object keys with '.', and use the array index as a key segment for array elements.\n\n{\"b\": 2, \"a\": 1, \"c\": {\"z\": 0, \"y\": [3, 2, 1]}}\n\nRespond with only the flattened JSON object.",
+		"expected": { "b": 2, "a": 1, "c.z": 0, "c.y.0": 3, "c.y.1": 2, "c.y.2": 1 }
+	},
+	{
+		"id": "log-server-errors",
+		"prompt": "Each line of this access log is: <request id> <method> <path> <status>.\n\nr1 GET /a 200\nr2 POST /b 503\nr3 GET /c 404\nr4 GET /d 500\nr5 PUT /e 201\nr6 GET /f 502\n\nList the request ids whose status is 500 or higher, in order of appearance, and how many there are. Respond with only a JSON object of the form {\"failed\": [<string>, ...], \"count\": <number>}.",
+		"expected": { "failed": ["r2", "r4", "r6"], "count": 3 }
+	}
+]
