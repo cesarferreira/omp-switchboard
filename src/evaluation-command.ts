@@ -22,9 +22,7 @@ export function benchmarkReply(
 	const usage = summarizeExecutionUsage([message]);
 	const costUsd = pricingKnown ? usage.executionCostUsd : undefined;
 	if (message.stopReason === "error" || message.stopReason === "aborted") {
-		// SDK transport errors synthesize zero usage even when the provider may have billed work.
-		const failedCost = costUsd !== undefined && costUsd > 0 ? costUsd : undefined;
-		throw Object.assign(new Error(message.errorMessage ?? `completion ${message.stopReason}`), { costUsd: failedCost });
+		throw Object.assign(new Error(message.errorMessage ?? `completion ${message.stopReason}`), { costUsd });
 	}
 	const text = message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("").trim();
 	let answer: unknown;

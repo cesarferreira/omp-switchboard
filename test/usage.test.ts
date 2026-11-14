@@ -180,3 +180,13 @@ test("unknown model pricing cannot turn a normalized zero into a free inference 
 	expect(result.executionCostUsd).toBeUndefined();
 	expect(result.usageComplete).toBe(false);
 });
+
+test.each(["error", "aborted"])("synthetic zero usage on %s cannot establish a complete zero-cost run", stopReason => {
+	const result = summarizeExecutionUsage([
+		assistant(usage({ input: 0, output: 0 }, 0), { stopReason }),
+	]);
+	expect(result.assistantCalls).toBe(1);
+	expect(result.pricedCalls).toBe(0);
+	expect(result.executionCostUsd).toBeUndefined();
+	expect(result.usageComplete).toBe(false);
+});
