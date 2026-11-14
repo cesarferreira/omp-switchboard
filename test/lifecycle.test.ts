@@ -329,3 +329,20 @@ test("outcome spend counts only assistant calls emitted during its own run", asy
 		expect(h.decisions().at(-1)?.engineCostUsd).toBe(0);
 	});
 });
+
+test("automatic continuation accumulates assistant spend across segments into one outcome", async () => {
+	await withRouter(async h => {
+		const first = { role: "assistant", provider: "test", model: "deep", content: [], stopReason: "stop",
+			usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } };
+		const second = { role: "assistant", provider: "test", model: "deep", content: [], stopReason: "stop",
+			usage: { input: 20, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.02 } } };
+		await h.emit("session_start"); await h.prompt("plan the migration");
+		await h.emit("message_end", { message: first }); await h.end(true, [first]);
+		expect(h.outcomes()).toHaveLength(0);
+		await h.emit("agent_start");
+		await h.emit("message_end", { message: second }); await h.end(false, [second]);
+		expect(h.outcomes()).toHaveLength(1);
+		expect(h.outcomes()[0]?.usage).toMatchObject({ assistantCalls: 2, inputTokens: 30, outputTokens: 2 });
+		expect(h.outcomes()[0]?.usage?.executionCostUsd).toBeCloseTo(0.03, 8);
+	});
+});
