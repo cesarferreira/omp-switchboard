@@ -62,7 +62,9 @@ export function summarizeExecutionUsage(
 			continue;
 		}
 		const total = isObj(usage.cost) ? usage.cost.total : undefined;
-		if (valid(total) && (!hasPricing || (typeof m.provider === "string" && typeof m.model === "string" && hasPricing(m.provider, m.model)))) {
+		// SDK transport failures can synthesize all-zero usage after work was billed upstream.
+		const unknownFailure = total === 0 && (m.stopReason === "error" || m.stopReason === "aborted");
+		if (valid(total) && !unknownFailure && (!hasPricing || (typeof m.provider === "string" && typeof m.model === "string" && hasPricing(m.provider, m.model)))) {
 			pricedCalls++;
 			knownExecutionCostUsd += total;
 		} else {
