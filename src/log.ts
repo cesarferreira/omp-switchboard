@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { logDir } from "./config";
 import type { Mode } from "./types";
+import type { ContextAssessment } from "./context-budget";
 
 export interface DecisionRecord {
 	type: "decision";
@@ -20,6 +21,11 @@ export interface DecisionRecord {
 	pinnedRoute?: string;
 	taskStart: boolean;
 	applied: boolean;
+	/** Actual model/thinking mutations; absent on legacy decision records. */
+	modelChanged?: boolean;
+	thinkingChanged?: boolean;
+	resultModel?: string;
+	contextAssessment?: ContextAssessment;
 	/** In shadow mode: the switch the router would have made. */
 	wouldSwitch: boolean;
 	contextTokens?: number;
@@ -85,7 +91,8 @@ export function summarize(recs: LogRecord[]): string {
 	const cost = decisions.reduce((s, d) => s + (d.engineCostUsd ?? 0), 0);
 	const errors = decisions.filter(d => d.error).length;
 	const would = decisions.filter(d => d.wouldSwitch).length;
-	const applied = decisions.filter(d => d.applied).length;
+	const applied = decisions.filter(d => d.modelChanged ?? (d.applied && d.wouldSwitch)).length;
+	const thinking = decisions.filter(d => d.thinkingChanged).length;
 	const done = [...outcomes.values()];
 	const toolErr = done.reduce((s, o) => s + o.toolErrors, 0);
 	const toolCalls = done.reduce((s, o) => s + o.toolCalls, 0);
@@ -93,7 +100,8 @@ export function summarize(recs: LogRecord[]): string {
 		`decisions: ${decisions.length} (errors ${errors})`,
 		`desired route: ${by(d => d.desiredRoute)}`,
 		`task starts: ${decisions.filter(d => d.taskStart).length}`,
-		`switches: applied ${applied}, would-switch ${would}`,
+		`model switches: applied ${applied}, would-switch ${would}`,
+		`thinking changes: ${thinking}`,
 		`engine latency: p50 ${p50}ms p95 ${p95}ms; cost $${cost.toFixed(4)}`,
 		`outcomes: ${done.length} turns, tool errors ${toolErr}/${toolCalls}`,
 	].join("\n");

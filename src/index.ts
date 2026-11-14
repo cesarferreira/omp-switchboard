@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionEntry } from "@oh-my-pi/pi-coding-agent";
 import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
 import {
 	configPath,
@@ -15,6 +15,8 @@ import { appendLog, type DecisionRecord, readLog, summarize } from "./log";
 import { decide, type PolicyRoute } from "./policy";
 import { KeywordEngine, resolveRoutes } from "./routes";
 import { buildSnapshot } from "./snapshot";
+import { assessTargetContext, type ContextAssessment } from "./context-budget";
+import { restoreCheckpoint, routeSignature, STATE_ENTRY, type RoutingCheckpoint } from "./state";
 import {
 	type Classification,
 	type DecisionEngine,
@@ -29,7 +31,7 @@ type ModelRef = NonNullable<ExtensionContext["model"]>;
 const ref = (m: ModelRef): string => `${m.provider}/${m.id}`;
 
 const USAGE =
-	"/switchboard on | off | shadow | status | explain | stats | routes | setups | save <name> | use <name|none> | reload\n/switchboard-setup  (interactive: pick model + thinking per route)";
+	"/switchboard on | off | shadow | reset | status | explain | stats | routes | setups | save <name> | use <name|none> | reload\n/switchboard-setup  (interactive: pick model + thinking per route)";
 
 const MAX_STAMPS = 200;
 
@@ -46,6 +48,14 @@ export default function switchboard(pi: ExtensionAPI) {
 	/** Model the session was left on by our last decision; a different one means a manual /model switch. */
 	let expectedModel: string | undefined;
 	let manualHold = false;
+	let shadowPin: string | undefined;
+	let activeSignature = "";
+	let storedCheckpoint: RoutingCheckpoint | undefined;
+	let fallbackPending = false;
+	let agentRunning = false;
+	let inputEpoch = 0;
+	let provisionalModel: string | undefined;
+	let pendingCheckpoint: { sessionId: string; afterId: string | null } | undefined;
 	/** Display-only stamps keyed by the final assistant message's timestamp. */
 	const stamps = new Map<number, string>();
 	const keywords = new KeywordEngine();
@@ -61,56 +71,119 @@ export default function switchboard(pi: ExtensionAPI) {
 		if (loaded.error) ctx.ui.notify(`switchboard: ${loaded.error}`, "warning");
 	};
 
+	// Durable state is selected by ancestry, not by the last session visited in this process.
+	const hydrate = (ctx: ExtensionContext, branch: readonly SessionEntry[] = ctx.sessionManager.getBranch()) => {
+		const routes = resolveRoutes(config);
+		const resolved = new Map(routes.map(r => [r.name, r.model ? ctx.models.resolve(r.model) : undefined]));
+		activeSignature = routeSignature(routes.map(r => {
+			const target = resolved.get(r.name);
+			return { name: r.name, target: target && ref(target), thinking: r.thinking, rank: r.rank };
+		}));
+		const names: Record<string, true> = Object.fromEntries(routes.map(r => [r.name, true]));
+		const state = restoreCheckpoint(branch, activeSignature, names);
+		pinnedRoute = state?.pinnedRoute ?? undefined;
+		expectedModel = state?.expectedModel ?? undefined;
+		manualHold = state?.manualHold ?? false;
+		fallbackPending = state?.fallbackPending ?? false;
+		storedCheckpoint = state;
+		return { branch, routes, resolved };
+	};
+	const persist = () => {
+		const state: RoutingCheckpoint = { version: 1, pinnedRoute: pinnedRoute ?? null,
+			expectedModel: expectedModel ?? null, manualHold, routeSignature: activeSignature, fallbackPending };
+		if (storedCheckpoint && state.pinnedRoute === storedCheckpoint.pinnedRoute
+			&& state.expectedModel === storedCheckpoint.expectedModel && state.manualHold === storedCheckpoint.manualHold
+			&& state.routeSignature === storedCheckpoint.routeSignature
+			&& state.fallbackPending === (storedCheckpoint.fallbackPending ?? false)) return;
+		pi.appendEntry(STATE_ENTRY, state);
+		storedCheckpoint = state;
+	};
+	// Save a decision only after its user message is durable, never as that message's parent.
+	const commitPending = (ctx: ExtensionContext) => {
+		if (!pendingCheckpoint || pendingCheckpoint.sessionId !== ctx.sessionManager.getSessionId()) return;
+		const branch = ctx.sessionManager.getBranch();
+		let hasUser = false;
+		let foundParent = pendingCheckpoint.afterId === null;
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i]!;
+			if (entry.id === pendingCheckpoint.afterId) { foundParent = true; break; }
+			if (entry.type === "message" && entry.message.role === "user") hasUser = true;
+		}
+		if (!foundParent || !hasUser) return;
+		persist();
+		pendingCheckpoint = undefined;
+		provisionalModel = undefined;
+	};
+	const enterSession = (ctx: ExtensionContext) => {
+		reload(ctx);
+		hydrate(ctx);
+		last = undefined;
+		turn = undefined;
+		handledPrompt = undefined;
+		pendingStamp = undefined;
+		shadowPin = undefined;
+		agentRunning = false;
+		inputEpoch++;
+		pendingCheckpoint = undefined;
+		provisionalModel = undefined;
+	};
 	pi.on("session_start", async (_e, ctx) => {
-		// Reply renderers only run while `extensionRenderers.assistantText` is on (default off).
-		// `stamp: true` is the user's opt-in, so turn that setting on for this process unless they set it.
+		enterSession(ctx);
 		if (config.stamp && rendererSetting && !rendererSetting.isConfigured(pi.pi.settings)) {
 			rendererSetting.override(pi.pi.settings, true);
 		}
-		pinnedRoute = undefined;
-		last = undefined;
+	});
+	pi.on("session_switch", async (_e, ctx) => { override = undefined; enterSession(ctx); });
+	const navigate = (ctx: ExtensionContext) => {
+		enterSession(ctx);
+		// Tree/branch navigation preserves the live model; a historical expectation is not a manual choice.
+		if (expectedModel !== undefined && ctx.model && expectedModel !== ref(ctx.model)) {
+			expectedModel = undefined;
+			persist();
+		}
+	};
+	pi.on("session_branch", async (_e, ctx) => { override = undefined; navigate(ctx); });
+	pi.on("session_tree", async (_e, ctx) => { navigate(ctx); });
+	pi.on("input", async (_e, ctx) => {
+		if (ctx.agent.kind !== "main" || agentRunning) return;
+		inputEpoch++;
+		turn = undefined;
 		handledPrompt = undefined;
-		expectedModel = undefined;
-		manualHold = false;
 		pendingStamp = undefined;
-		reload(ctx);
+		pendingCheckpoint = undefined;
+	});
+	pi.on("agent_start", async () => { agentRunning = true; });
+	pi.on("message_end", async (_event, ctx) => {
+		// OMP queues message persistence before notifying extensions; later events also retry this check.
+		await Promise.resolve();
+		commitPending(ctx);
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (event.reason !== "prompt" || ctx.agent.kind !== "main") return;
 		const mode = effectiveMode(config, override);
 		if (mode === "off" || !ctx.model) return;
-		// If the model is not the one we left it on, the user changed it by hand: stop auto-routing
-		// until they re-enable it, instead of overwriting their choice on the next task.
-		if (mode === "auto" && !manualHold && expectedModel !== undefined && ref(ctx.model) !== expectedModel) {
+		if (agentRunning) return;
+		if (handledPrompt === event.prompt) return;
+
+		const { branch, routes, resolved } = hydrate(ctx);
+		const currentModel = ref(ctx.model);
+		const epoch = inputEpoch;
+		if (provisionalModel === currentModel) expectedModel = undefined;
+		if (mode === "auto" && !manualHold && expectedModel !== undefined && currentModel !== expectedModel) {
 			manualHold = true;
+			persist();
 			ctx.ui.notify("switchboard: model changed by hand; routing paused (/switchboard on to resume)", "info");
 		}
 		if (mode === "auto" && manualHold) return;
-		// The chain re-fires for the same submission and for steer/follow-up batches mid-run.
-		// Route once per run: skip while a run is open so counters and the pin stay stable.
-		if (turn && !ctx.isIdle()) return;
-		// Same-submission policy retries fire before agent_start; the memo is cleared in agent_end.
-		if (handledPrompt === event.prompt) return;
-
-		const currentModel = ref(ctx.model);
-		const routes = resolveRoutes(config);
-		const resolved = new Map<string, ModelRef | undefined>(
-			routes.map(r => [r.name, r.model ? ctx.models.resolve(r.model) : undefined]),
-		);
+		const pin = mode === "shadow" ? shadowPin ?? pinnedRoute : pinnedRoute;
 		const policyRoutes: PolicyRoute[] = routes.map(r => {
 			const m = resolved.get(r.name);
-			return {
-				name: r.name,
-				rank: r.rank,
-				hasModel: r.model !== undefined,
-				target: m && ref(m),
-				contextWindow: m?.contextWindow ?? undefined,
-			};
+			return { name: r.name, rank: r.rank, hasModel: r.model !== undefined,
+				target: m && ref(m), contextWindow: m?.contextWindow ?? undefined };
 		});
 		const routeModels = Object.fromEntries(policyRoutes.map(r => [r.name, r.target]));
-
-		const snapshot = buildSnapshot(ctx, event.prompt, currentModel, pinnedRoute, config.routing.historyMessages);
+		const snapshot = buildSnapshot(ctx, event.prompt, currentModel, pin, config.routing.historyMessages, event.images, branch);
 		const started = Date.now();
 		let cls: Classification | undefined;
 		let error: string | undefined;
@@ -127,90 +200,82 @@ export default function switchboard(pi: ExtensionAPI) {
 			error = `${e instanceof Error ? e.message : String(e)}; fell back to keywords`;
 			engineLabel = `${config.decision.model} (failed)`;
 		}
+		const usedKeywords = cls === undefined;
 		cls ??= await keywords.classify(snapshot, routes);
+		if (epoch !== inputEpoch) return;
+		const unclassified = usedKeywords && pin === undefined && !cls.matched?.length;
 		const engineLatencyMs = Date.now() - started;
-
-		const verdict = decide({
-			cls,
-			pinnedRoute,
-			currentModel,
-			routes: policyRoutes,
-			contextTokens: snapshot.contextTokens,
-			config: config.routing,
-		});
-
+		const verdict = decide({ cls, pinnedRoute: pin, currentModel, routes: policyRoutes,
+			contextTokens: snapshot.contextTokens, config: config.routing });
 		const currentThinking = pi.getThinkingLevel();
-		let applied = false;
 		let reason = verdict.reason;
 		let nextPin = verdict.pinnedRoute;
-		let switchedTo: string | undefined;
+		let admitted = true;
+		let contextAssessment: ContextAssessment | undefined;
 		const route = routes.find(r => r.name === verdict.desiredRoute);
-		if (route && mode === "auto") {
-			const target = resolved.get(route.name);
+		const target = route && resolved.get(route.name);
+		if (verdict.switchModel && target) {
+			contextAssessment = assessTargetContext({ branch, current: ctx.model, target,
+				liveTokens: snapshot.contextTokens, prompt: event.prompt, imageCount: event.images?.length ?? 0,
+				fraction: config.routing.contextWindowFraction });
+			admitted = contextAssessment.kind === "estimated-fit";
+			if (!admitted) {
+				nextPin = pin;
+				reason = `context guard: ${contextAssessment.reason}; keeping ${currentModel}`;
+				if (mode === "auto") ctx.ui.notify(`switchboard: ${reason}`, "info");
+			}
+		}
+		if (route && mode === "auto" && admitted) {
 			try {
-				if (verdict.switchModel && target) {
-					if (await pi.setModel(target)) {
-						applied = true;
-						switchedTo = ref(target);
-					} else {
-						reason += "; setModel refused (no credentials?)";
-						nextPin = pinnedRoute;
-					}
+				if (verdict.switchModel && target && !await pi.setModel(target)) {
+					reason += "; setModel refused (no credentials?)";
+					nextPin = pin;
+					admitted = false;
 				}
-				// setModel resets thinking to the model default, so always re-apply the route's level.
-				if (nextPin === route.name && route.thinking && pi.getThinkingLevel() !== route.thinking) {
-					// Config values are validated strings; the host's thinking enum members are the same strings.
+				if (admitted && nextPin === route.name && route.thinking && pi.getThinkingLevel() !== route.thinking) {
 					const level = route.thinking as Parameters<ExtensionAPI["setThinkingLevel"]>[0];
 					pi.setThinkingLevel(level);
-					applied = true;
 				}
 			} catch (e) {
 				reason += `; switch failed: ${e instanceof Error ? e.message : String(e)}`;
-				nextPin = pinnedRoute;
+				nextPin = pin;
 			}
 		}
-		pinnedRoute = nextPin;
-		expectedModel = switchedTo ?? currentModel;
-
-		if (route && config.stamp) {
-			const target = routeModels[route.name] ?? currentModel;
-			const via = cls.matched?.length ? `matched: ${cls.matched.map(k => `"${k}"`).join(", ")}` : `decided by ${engineLabel}`;
-			const thinking = route.thinking ?? currentThinking;
-			pendingStamp = `${mode === "shadow" ? "Switchboard (shadow, not applied)" : "Switchboard"}: ${route.name} → ${target} · thinking ${thinking} · ${via}`;
-		} else {
-			pendingStamp = undefined;
+		const resultModel = ctx.models.current();
+		const resultRef = resultModel ? ref(resultModel) : currentModel;
+		const modelChanged = mode === "auto" && resultRef !== currentModel;
+		const thinkingChanged = mode === "auto" && pi.getThinkingLevel() !== currentThinking;
+		if (unclassified) {
+			nextPin = undefined;
+			reason += "; no keyword match; task remains unpinned";
 		}
-
+		if (mode === "auto") {
+			pinnedRoute = nextPin;
+			if (modelChanged) { fallbackPending = false; provisionalModel = resultRef; }
+			expectedModel = fallbackPending ? undefined : resultRef;
+			pendingCheckpoint = { sessionId: ctx.sessionManager.getSessionId(), afterId: branch.at(-1)?.id ?? null };
+		} else {
+			shadowPin = nextPin;
+		}
+		if (route && config.stamp) {
+			const shownModel = mode === "shadow" && admitted ? routeModels[route.name] ?? currentModel : resultRef;
+			const via = cls.matched?.length ? `matched: ${cls.matched.map(k => `"${k}"`).join(", ")}` : `decided by ${engineLabel}`;
+			const thinking = mode === "shadow" && admitted ? route.thinking ?? currentThinking : pi.getThinkingLevel();
+			pendingStamp = `${mode === "shadow" ? "Switchboard (shadow, not applied)" : "Switchboard"}: ${route.name} → ${shownModel} · thinking ${thinking} · ${via}`;
+		} else pendingStamp = undefined;
 		handledPrompt = event.prompt;
 		const id = crypto.randomUUID();
 		turn = { id, startedAt: Date.now(), toolCalls: 0, toolErrors: 0 };
 		const record: DecisionRecord = {
-			type: "decision",
-			id,
-			ts: Date.now(),
-			sessionId: ctx.sessionManager.getSessionId(),
-			mode,
-			engine: engineLabel,
-			engineLatencyMs,
-			engineCostUsd: cls.costUsd,
-			currentModel,
-			currentThinking: String(currentThinking ?? "default"),
-			routeModels,
-			classification: {
-				newTask: cls.newTask,
-				newTaskConfidence: cls.newTaskConfidence,
-				route: cls.route,
-				routeConfidence: cls.routeConfidence,
-				matched: cls.matched,
-			},
-			desiredRoute: verdict.desiredRoute,
-			pinnedRoute,
-			taskStart: verdict.taskStart,
-			applied,
-			wouldSwitch: verdict.switchModel,
-			contextTokens: snapshot.contextTokens,
-			reason,
-			error,
+			type: "decision", id, ts: Date.now(), sessionId: ctx.sessionManager.getSessionId(), mode,
+			engine: engineLabel, engineLatencyMs, engineCostUsd: cls.costUsd, currentModel,
+			currentThinking: String(currentThinking ?? "default"), routeModels,
+			classification: { newTask: cls.newTask, newTaskConfidence: cls.newTaskConfidence,
+				route: cls.route, routeConfidence: cls.routeConfidence, matched: cls.matched },
+			desiredRoute: verdict.desiredRoute, pinnedRoute: mode === "shadow" ? shadowPin : pinnedRoute,
+			taskStart: verdict.taskStart && !unclassified, applied: modelChanged || thinkingChanged,
+			modelChanged, thinkingChanged, resultModel: resultRef, contextAssessment,
+			wouldSwitch: verdict.switchModel && admitted, contextTokens: snapshot.contextTokens, reason, error,
 			promptPreview: config.logPrompts ? event.prompt.slice(0, 120) : undefined,
 		};
 		last = record;
@@ -238,8 +303,12 @@ export default function switchboard(pi: ExtensionAPI) {
 	});
 
 	// Auto-retry may swap the model under us; forget what we expected so that is not mistaken for a manual choice.
-	pi.on("retry_fallback_applied", async () => {
+	pi.on("retry_fallback_applied", async (_event, ctx) => {
+		if (!pendingCheckpoint) hydrate(ctx);
 		expectedModel = undefined;
+		fallbackPending = true;
+		if (pendingCheckpoint) commitPending(ctx);
+		else persist();
 	});
 
 	pi.on("tool_result", async event => {
@@ -249,8 +318,11 @@ export default function switchboard(pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (e, ctx) => {
+		commitPending(ctx);
 		// The loop has not settled (automatic continuation or waiting on background jobs): the run is still open.
 		if (e.willContinue) return;
+		agentRunning = false;
+		pendingCheckpoint = undefined;
 		const finished = turn;
 		turn = undefined;
 		handledPrompt = undefined;
@@ -286,26 +358,35 @@ export default function switchboard(pi: ExtensionAPI) {
 		config.activeSetup && config.setups[config.activeSetup] ? config.activeSetup : undefined;
 
 	pi.registerCommand("switchboard", {
-		description: "Model router: on | off | shadow | status | explain | stats | routes | setups | save | use | reload",
+		description: "Model router: on | off | shadow | reset | status | explain | stats | routes | setups | save | use | reload",
 		handler: async (args, ctx) => {
 			const [sub = "status", ...rest] = args.trim().split(/\s+/);
+			hydrate(ctx);
 			const say = (s: string) => ctx.ui.notify(s, "info");
 			switch (sub) {
 				case "on":
 					override = "auto";
 					manualHold = false;
 					expectedModel = undefined;
+					shadowPin = undefined;
+					persist();
 					return say("switchboard: auto (switches models)");
 				case "off":
 					override = "off";
 					return say("switchboard: off");
 				case "shadow":
 					override = "shadow";
-					manualHold = false;
-					expectedModel = undefined;
+					shadowPin = pinnedRoute;
 					return say("switchboard: shadow (logs recommendations, never switches)");
+				case "reset":
+					pinnedRoute = undefined;
+					shadowPin = undefined;
+					expectedModel = undefined;
+					persist();
+					return say("switchboard: task pin reset; the next prompt may choose a fresh route");
 				case "reload":
 					reload(ctx);
+					hydrate(ctx);
 					return say(`switchboard: config reloaded from ${configPath()}`);
 				case "status": {
 					const d = config.decision.model ? resolveDecisionModel(ctx, config.decision.model) : undefined;
@@ -369,7 +450,9 @@ export default function switchboard(pi: ExtensionAPI) {
 							...(last.error ? [`classifier error: ${last.error}`] : []),
 							`was on ${last.currentModel} (${last.contextTokens ?? "?"} ctx tokens)`,
 							`decision: ${last.reason}`,
-							last.applied ? "applied" : last.wouldSwitch ? "NOT applied (shadow)" : "no switch",
+							`now on ${last.resultModel ?? "unknown (legacy record)"}; model ${last.modelChanged ? "changed" : "unchanged"}, thinking ${last.thinkingChanged ? "changed" : "unchanged"}`,
+							...(last.contextAssessment ? [`context admission (metadata estimate): ${JSON.stringify(last.contextAssessment)}`] : []),
+							last.mode === "shadow" ? "shadow: not applied" : last.applied ? "applied" : "no mutation",
 						].join("\n"),
 					);
 				}

@@ -105,18 +105,18 @@ export function matchKeywords(prompt: string, routes: ResolvedRoute[]): { route:
 }
 
 /**
- * Keyword classifier. A match is a new task; no match is `default` and is treated as a follow-up,
- * so short replies like "yes" or "continue" stay on the pinned route.
+ * Keywords identify work, not a new goal. With a pin, policy may escalate but
+ * requires a decision-model boundary or an explicit reset before downgrading.
  */
 export class KeywordEngine implements DecisionEngine {
 	readonly label = "keywords";
 
-	async classify(snapshot: { latestRequest: string }, routes: ResolvedRoute[]): Promise<Classification> {
+	async classify(snapshot: { latestRequest: string; pinnedRoute?: string }, routes: ResolvedRoute[]): Promise<Classification> {
 		const hit = matchKeywords(snapshot.latestRequest, routes);
 		return {
-			newTask: hit !== undefined,
-			newTaskConfidence: 1,
-			route: hit?.route ?? "default",
+			newTask: false,
+			newTaskConfidence: 0,
+			route: hit?.route ?? snapshot.pinnedRoute ?? "default",
 			routeConfidence: 1,
 			matched: hit?.matched,
 		};

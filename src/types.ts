@@ -67,8 +67,16 @@ export interface SwitchboardConfig {
 
 export interface Snapshot {
 	currentModel: string;
+	/** Full request as typed; only the remote decision projection clips it. */
 	latestRequest: string;
+	/** Bounded recent user/assistant text and tool-result excerpts, oldest first. */
 	recent: { role: string; text: string }[];
+	/** Readable portable compaction summary for the current boundary, when one exists. */
+	summary?: string;
+	/** Images attached to the latest request; count only, never content. */
+	attachmentCount: number;
+	/** Compacted text history cannot be shown (provider-native placeholder or unlocatable retained boundary). */
+	compactedEvidenceUnavailable: boolean;
 	contextTokens: number | undefined;
 	pinnedRoute: string | undefined;
 }
