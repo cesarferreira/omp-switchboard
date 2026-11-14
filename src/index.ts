@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionEntry } from "@oh-my-pi/pi-coding-agent";
 import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import {
 	configPath,
 	effectiveMode,
@@ -17,6 +18,8 @@ import { KeywordEngine, resolveRoutes } from "./routes";
 import { buildSnapshot } from "./snapshot";
 import { assessTargetContext, type ContextAssessment } from "./context-budget";
 import { restoreCheckpoint, routeSignature, STATE_ENTRY, type RoutingCheckpoint } from "./state";
+import { hasUsablePrices, summarizeExecutionUsage } from "./usage";
+import { runEvaluationCommand } from "./evaluation-command";
 import {
 	type Classification,
 	type DecisionEngine,
@@ -31,7 +34,7 @@ type ModelRef = NonNullable<ExtensionContext["model"]>;
 const ref = (m: ModelRef): string => `${m.provider}/${m.id}`;
 
 const USAGE =
-	"/switchboard on | off | shadow | reset | status | explain | stats | routes | setups | save <name> | use <name|none> | reload\n/switchboard-setup  (interactive: pick model + thinking per route)";
+	"/switchboard on | off | shadow | reset | status | explain | stats | routes | setups | save <name> | use <name|none> | reload | evaluate [file] | benchmark [file]\n/switchboard-setup  (interactive: pick model + thinking per route)";
 
 const MAX_STAMPS = 200;
 
@@ -42,7 +45,7 @@ export default function switchboard(pi: ExtensionAPI) {
 	let pinnedRoute: string | undefined;
 	let engine: { key: string; value: DecisionEngine } | undefined;
 	let last: DecisionRecord | undefined;
-	let turn: { id: string; startedAt: number; toolCalls: number; toolErrors: number } | undefined;
+	let turn: { id: string; startedAt: number; toolCalls: number; toolErrors: number; assistantMessages: AssistantMessage[] } | undefined;
 	let handledPrompt: string | undefined;
 	let pendingStamp: string | undefined;
 	/** Model the session was left on by our last decision; a different one means a manual /model switch. */
@@ -153,7 +156,9 @@ export default function switchboard(pi: ExtensionAPI) {
 		pendingCheckpoint = undefined;
 	});
 	pi.on("agent_start", async () => { agentRunning = true; });
-	pi.on("message_end", async (_event, ctx) => {
+	pi.on("message_end", async (event, ctx) => {
+		// Settled events can contain earlier context; collect only calls emitted while this run is open.
+		if (turn && event.message.role === "assistant") turn.assistantMessages.push(event.message);
 		// OMP queues message persistence before notifying extensions; later events also retry this check.
 		await Promise.resolve();
 		commitPending(ctx);
@@ -265,15 +270,16 @@ export default function switchboard(pi: ExtensionAPI) {
 		} else pendingStamp = undefined;
 		handledPrompt = event.prompt;
 		const id = crypto.randomUUID();
-		turn = { id, startedAt: Date.now(), toolCalls: 0, toolErrors: 0 };
+		turn = { id, startedAt: Date.now(), toolCalls: 0, toolErrors: 0, assistantMessages: [] };
 		const record: DecisionRecord = {
 			type: "decision", id, ts: Date.now(), sessionId: ctx.sessionManager.getSessionId(), mode,
-			engine: engineLabel, engineLatencyMs, engineCostUsd: cls.costUsd, currentModel,
+			engine: engineLabel, engineLatencyMs, engineCostUsd: error ? undefined : usedKeywords ? 0 : cls.costUsd, currentModel,
 			currentThinking: String(currentThinking ?? "default"), routeModels,
-			classification: { newTask: cls.newTask, newTaskConfidence: cls.newTaskConfidence,
+			classification: { intent: cls.intent, intentConfidence: cls.intentConfidence,
 				route: cls.route, routeConfidence: cls.routeConfidence, matched: cls.matched },
 			desiredRoute: verdict.desiredRoute, pinnedRoute: mode === "shadow" ? shadowPin : pinnedRoute,
 			taskStart: verdict.taskStart && !unclassified, applied: modelChanged || thinkingChanged,
+			phaseChange: verdict.phaseChange && nextPin !== pin && nextPin === route?.name,
 			modelChanged, thinkingChanged, resultModel: resultRef, contextAssessment,
 			wouldSwitch: verdict.switchModel && admitted, contextTokens: snapshot.contextTokens, reason, error,
 			promptPreview: config.logPrompts ? event.prompt.slice(0, 120) : undefined,
@@ -336,7 +342,11 @@ export default function switchboard(pi: ExtensionAPI) {
 			durationMs: Date.now() - finished.startedAt,
 			toolCalls: finished.toolCalls,
 			toolErrors: finished.toolErrors,
-			aborted: e.messages.some(m => m.role === "assistant" && m.stopReason === "aborted"),
+			usage: summarizeExecutionUsage(finished.assistantMessages, (provider, id) => {
+				const model = ctx.modelRegistry.find(provider, id);
+				return model !== undefined && hasUsablePrices(model);
+			}),
+			aborted: finished.assistantMessages.some(message => message.stopReason === "aborted"),
 		});
 	});
 
@@ -358,12 +368,20 @@ export default function switchboard(pi: ExtensionAPI) {
 		config.activeSetup && config.setups[config.activeSetup] ? config.activeSetup : undefined;
 
 	pi.registerCommand("switchboard", {
-		description: "Model router: on | off | shadow | reset | status | explain | stats | routes | setups | save | use | reload",
+		description: "Model router: on | off | shadow | reset | status | explain | stats | routes | setups | save | use | reload | evaluate | benchmark",
 		handler: async (args, ctx) => {
 			const [sub = "status", ...rest] = args.trim().split(/\s+/);
 			hydrate(ctx);
 			const say = (s: string) => ctx.ui.notify(s, "info");
 			switch (sub) {
+				case "evaluate":
+				case "benchmark":
+					try {
+						return say(await runEvaluationCommand(sub, rest.length ? rest.join(" ") : undefined, ctx, config, pi.getThinkingLevel()));
+					} catch (error) {
+						ctx.ui.notify(`switchboard ${sub}: ${error instanceof Error ? error.message : String(error)}`, "error");
+						return;
+					}
 				case "on":
 					override = "auto";
 					manualHold = false;
@@ -445,7 +463,7 @@ export default function switchboard(pi: ExtensionAPI) {
 						[
 							`mode ${last.mode}; classifier ${last.engine} (${last.engineLatencyMs}ms)`,
 							c
-								? `classified: ${c.newTask ? "new task" : "follow-up"} (${c.newTaskConfidence.toFixed(2)}), route ${c.route} (${c.routeConfidence.toFixed(2)})${c.matched?.length ? `, matched ${c.matched.join(", ")}` : ""}`
+								? `classified: ${c.intent ?? "legacy boundary"} (${c.intentConfidence?.toFixed(2) ?? "?"}), route ${c.route} (${c.routeConfidence.toFixed(2)})${c.matched?.length ? `, matched ${c.matched.join(", ")}` : ""}`
 								: "no classification",
 							...(last.error ? [`classifier error: ${last.error}`] : []),
 							`was on ${last.currentModel} (${last.contextTokens ?? "?"} ctx tokens)`,

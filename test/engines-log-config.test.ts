@@ -11,19 +11,19 @@ const routes = resolveRoutes(DEFAULT_CONFIG);
 
 describe("parseChatJson", () => {
 	test("extracts the JSON object from surrounding prose or code fences", () => {
-		const r = parseChatJson('Sure:\n```json\n{"task":"new_task","task_confidence":0.9,"route":"plan","route_confidence":0.8}\n```', routes);
-		expect(r).toMatchObject({ newTask: true, newTaskConfidence: 0.9, route: "plan", routeConfidence: 0.8 });
+		const r = parseChatJson('Sure:\n```json\n{"intent":"new_task","intent_confidence":0.9,"route":"plan","route_confidence":0.8}\n```', routes);
+		expect(r).toMatchObject({ intent: "new_task", intentConfidence: 0.9, route: "plan", routeConfidence: 0.8 });
 	});
 
 	test("rejects routes that are not configured and malformed replies", () => {
-		expect(() => parseChatJson('{"task":"follow_up","route":"nope"}', routes)).toThrow(/bad route/);
-		expect(() => parseChatJson('{"task":"maybe","route":"plan"}', routes)).toThrow(/bad task/);
+		expect(() => parseChatJson('{"intent":"continue","route":"nope"}', routes)).toThrow(/bad route/);
+		expect(() => parseChatJson('{"intent":"maybe","route":"plan"}', routes)).toThrow(/bad intent/);
 		expect(() => parseChatJson("no json here", routes)).toThrow(/no JSON/);
 	});
 
-	test("out-of-range or missing confidences fall back to 0.5 instead of trusting them", () => {
-		const r = parseChatJson('{"task":"follow_up","task_confidence":7,"route":"default"}', routes);
-		expect(r).toMatchObject({ newTaskConfidence: 0.5, routeConfidence: 0.5, newTask: false });
+	test("missing or invalid confidence cannot authorize a handoff", () => {
+		const r = parseChatJson('{"intent":"phase_change","intent_confidence":7,"route":"default"}', routes);
+		expect(r).toMatchObject({ intentConfidence: 0, routeConfidence: 0, intent: "phase_change" });
 	});
 });
 

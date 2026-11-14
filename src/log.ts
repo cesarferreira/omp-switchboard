@@ -1,8 +1,9 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { logDir } from "./config";
-import type { Mode } from "./types";
+import type { Classification, Mode } from "./types";
 import type { ContextAssessment } from "./context-budget";
+import type { ExecutionUsage } from "./usage";
 
 export interface DecisionRecord {
 	type: "decision";
@@ -16,10 +17,11 @@ export interface DecisionRecord {
 	currentModel: string;
 	currentThinking: string;
 	routeModels: Record<string, string | undefined>;
-	classification?: { newTask: boolean; newTaskConfidence: number; route: string; routeConfidence: number; matched?: string[] };
+	classification?: Pick<Classification, "intent" | "intentConfidence" | "route" | "routeConfidence" | "matched">;
 	desiredRoute?: string;
 	pinnedRoute?: string;
 	taskStart: boolean;
+	phaseChange?: boolean;
 	applied: boolean;
 	/** Actual model/thinking mutations; absent on legacy decision records. */
 	modelChanged?: boolean;
@@ -43,6 +45,7 @@ export interface OutcomeRecord {
 	toolCalls: number;
 	toolErrors: number;
 	aborted: boolean;
+	usage?: ExecutionUsage;
 }
 
 export type LogRecord = DecisionRecord | OutcomeRecord;
@@ -88,7 +91,14 @@ export function summarize(recs: LogRecord[]): string {
 	const lat = decisions.map(d => d.engineLatencyMs).sort((a, b) => a - b);
 	const p50 = lat[Math.floor(lat.length / 2)];
 	const p95 = lat[Math.min(lat.length - 1, Math.floor(lat.length * 0.95))];
-	const cost = decisions.reduce((s, d) => s + (d.engineCostUsd ?? 0), 0);
+	let cost = 0;
+	let pricedDecisions = 0;
+	for (const d of decisions) {
+		if (d.engineCostUsd !== undefined && Number.isFinite(d.engineCostUsd) && d.engineCostUsd >= 0) {
+			cost += d.engineCostUsd;
+			pricedDecisions++;
+		}
+	}
 	const errors = decisions.filter(d => d.error).length;
 	const would = decisions.filter(d => d.wouldSwitch).length;
 	const applied = decisions.filter(d => d.modelChanged ?? (d.applied && d.wouldSwitch)).length;
@@ -96,6 +106,18 @@ export function summarize(recs: LogRecord[]): string {
 	const done = [...outcomes.values()];
 	const toolErr = done.reduce((s, o) => s + o.toolErrors, 0);
 	const toolCalls = done.reduce((s, o) => s + o.toolCalls, 0);
+	let executionCost = 0;
+	let executionCalls = 0;
+	let pricedCalls = 0;
+	let measuredRuns = 0;
+	for (const outcome of done) {
+		if (!outcome.usage) continue;
+		measuredRuns++;
+		executionCost += outcome.usage.knownExecutionCostUsd;
+		executionCalls += outcome.usage.assistantCalls;
+		pricedCalls += outcome.usage.pricedCalls;
+	}
+	const complete = pricedDecisions === decisions.length && measuredRuns === done.length && pricedCalls === executionCalls;
 	return [
 		`decisions: ${decisions.length} (errors ${errors})`,
 		`desired route: ${by(d => d.desiredRoute)}`,
@@ -103,6 +125,9 @@ export function summarize(recs: LogRecord[]): string {
 		`model switches: applied ${applied}, would-switch ${would}`,
 		`thinking changes: ${thinking}`,
 		`engine latency: p50 ${p50}ms p95 ${p95}ms; cost $${cost.toFixed(4)}`,
+		`router cost coverage: ${pricedDecisions}/${decisions.length} decisions priced`,
+		`execution cost: $${executionCost.toFixed(4)} known; ${pricedCalls}/${executionCalls} assistant calls priced, ${measuredRuns}/${done.length} runs measured`,
+		`combined reported cost: $${(cost + executionCost).toFixed(4)} (${complete ? "complete for logged calls" : "partial; unknown charges are not zero"})`,
 		`outcomes: ${done.length} turns, tool errors ${toolErr}/${toolCalls}`,
 	].join("\n");
 }

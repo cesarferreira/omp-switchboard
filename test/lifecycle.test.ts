@@ -5,12 +5,12 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@oh-my-pi/pi-coding-agent";
 import type { Model } from "@oh-my-pi/pi-ai";
 import switchboard from "../src/index";
-import { readLog, type DecisionRecord } from "../src/log";
+import { readLog, type DecisionRecord, type OutcomeRecord } from "../src/log";
 
 // The isolated host never sends provider requests; only these metadata fields are consumed.
 const model = (id: string, contextWindow = 200_000): Model => {
 	const fixture = { id, provider: "test", api: "openai-completions", name: id, baseUrl: "http://localhost/unused",
-		reasoning: true, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		reasoning: true, input: ["text", "image"], cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
 		contextWindow, maxTokens: 8192 } as unknown as Model;
 	return fixture;
 };
@@ -29,10 +29,11 @@ interface TestHarness {
 	command(args: string): Promise<void>;
 	prompt(text: string, images?: unknown[]): Promise<void>;
 	prepare(text: string): Promise<void>;
-	end(willContinue?: boolean): Promise<void>;
+	end(willContinue?: boolean, history?: unknown[]): Promise<void>;
 	emit(name: string, event?: unknown): Promise<void>;
 	install(): void;
 	decisions(): DecisionRecord[];
+	outcomes(): OutcomeRecord[];
 }
 
 async function withRouter(run: (h: TestHarness) => Promise<void>, overrides: Record<string, unknown> = {}) {
@@ -68,6 +69,7 @@ function harness(dir: string): TestHarness {
 		get model() { return current; },
 		agent: { kind: "main", id: "main", name: "main", depth: 0 },
 		models: { current: () => current, resolve: (ref: string) => models.find(m => `${m.provider}/${m.id}` === ref) },
+		modelRegistry: { find: (provider: string, id: string) => models.find(m => m.provider === provider && m.id === id) },
 		getContextUsage: () => tokens === undefined ? undefined : { tokens, contextWindow: current.contextWindow, percent: 0 },
 		isIdle: () => idle,
 		sessionManager: { getBranch: () => branch, getSessionId: () => "test-session" },
@@ -106,13 +108,15 @@ function harness(dir: string): TestHarness {
 			timestamp: new Date().toISOString() });
 		await emit("message_end", { message });
 	};
-	const end = async (willContinue = false) => {
-		await emit("agent_end", { willContinue, messages: [] });
+	const end = async (willContinue = false, history: unknown[] = []) => {
+		await emit("agent_end", { willContinue, messages: history });
 		if (!willContinue) { running = false; idle = true; }
 	};
 	const decisions = () => readLog(join(dir, "switchboard/decisions.jsonl"))
 		.filter((r): r is DecisionRecord => r.type === "decision");
-	return { ctx, notices, command, prompt, prepare, end, emit, install, decisions,
+	const outcomes = () => readLog(join(dir, "switchboard/decisions.jsonl"))
+		.filter((r): r is OutcomeRecord => r.type === "outcome");
+	return { ctx, notices, command, prompt, prepare, end, emit, install, decisions, outcomes,
 		get current() { return current.id; }, get thinking() { return thinking; },
 		get branch() { return branch; }, set branch(value: SessionEntry[]) { branch = value; },
 		set current(value: string) { current = models.find(m => m.id === value)!; },
@@ -308,4 +312,20 @@ test("shadow greetings also leave the first real task unpinned", async () => {
 		expect(h.decisions().at(-1)?.desiredRoute).toBe("quick-edit");
 		expect(h.current).toBe("std");
 	}, { mode: "shadow" });
+});
+
+test("outcome spend counts only assistant calls emitted during its own run", async () => {
+	await withRouter(async h => {
+		const assistant = (input: number, cost: number) => ({ role: "assistant", provider: "test", model: "deep",
+			content: [], stopReason: "stop", usage: { input, output: 1, cacheRead: 0, cacheWrite: 0,
+				cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } } });
+		const first = assistant(10, 0.01);
+		const second = assistant(20, 0.02);
+		await h.emit("session_start"); await h.prompt("plan the migration");
+		await h.emit("message_end", { message: first }); await h.end(false, [first]);
+		await h.prompt("continue");
+		await h.emit("message_end", { message: second }); await h.end(false, [first, second]);
+		expect(h.outcomes().at(-1)?.usage).toMatchObject({ assistantCalls: 1, inputTokens: 20, executionCostUsd: 0.02 });
+		expect(h.decisions().at(-1)?.engineCostUsd).toBe(0);
+	});
 });

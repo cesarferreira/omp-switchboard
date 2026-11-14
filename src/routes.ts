@@ -5,35 +5,35 @@ export const BUILTIN_ROUTES: Record<string, Required<Pick<RouteConfig, "descript
 		model: "@slow",
 		thinking: "high",
 		rank: 3,
-		description: "Planning and design: architecture, trade-offs, strategy, 'should we', thinking a problem through before coding.",
+		description: "Design, architecture, trade-offs and review BEFORE execution. Examples: 'design the migration', 'is this approach sound?', 'how would we implement it?'. Not an instruction to implement an approved plan, a rote edit, or root-causing an unexplained failure.",
 		keywords: ["plan", "think through", "design", "architecture", "trade-offs", "tradeoffs", "should we", "roadmap", "strategy"],
 	},
 	implement: {
 		model: "@task",
 		thinking: "medium",
 		rank: 2,
-		description: "Building: implement a feature, fix a clear bug, refactor, write tests or code.",
+		description: "Execute code changes, a known bug fix, refactoring or tests. Examples: 'implement the approved plan', 'now add the unit tests', 'apply that fix'. Not merely discussing how implementation might work, asking for design review, or investigating an unknown cause.",
 		keywords: ["implement", "build", "add", "create", "write", "refactor", "fix", "make it"],
 	},
 	"deep-dive": {
 		model: "@slow",
 		thinking: "high",
 		rank: 3,
-		description: "Understanding or investigating: explain code, analyze, audit, root-cause unclear failures, read across a large codebase.",
+		description: "Investigate or explain an unclear problem across code/evidence. Examples: 'why are these tests flaky?', 'find the cause of this crash', 'explain how this subsystem works'. Not a known fix ready to apply or a mechanical rename.",
 		keywords: ["explain", "understand", "how does", "analyze", "analyse", "deep dive", "extract", "audit", "root cause", "investigate"],
 	},
 	"quick-edit": {
 		model: "@smol",
 		thinking: "low",
 		rank: 0,
-		description: "Trivial or mechanical: rename, move, delete, typo, formatting, tiny tweaks, simple lookups.",
+		description: "Bounded mechanical work: rename, typo, formatting, small move or version bump. Examples: 'rename foo to bar', 'correct the spelling in this comment'. Not a broad refactor, an unexplained failure, or permission to leave an ongoing work phase; a local correction can have intent continue.",
 		keywords: ["rename", "move", "delete", "typo", "tweak", "bump", "quick fix", "format", "reformat"],
 	},
 	default: {
 		model: "@default",
 		thinking: "medium",
 		rank: 1,
-		description: "Everything else: ordinary questions and requests that fit no other route.",
+		description: "Ordinary questions or requests with no better configured route. Examples: a greeting or general factual question. Not a fallback for a clear design, implementation, investigation or mechanical-edit request.",
 		keywords: [],
 	},
 };
@@ -114,11 +114,12 @@ export class KeywordEngine implements DecisionEngine {
 	async classify(snapshot: { latestRequest: string; pinnedRoute?: string }, routes: ResolvedRoute[]): Promise<Classification> {
 		const hit = matchKeywords(snapshot.latestRequest, routes);
 		return {
-			newTask: false,
-			newTaskConfidence: 0,
+			intent: "continue",
+			intentConfidence: 0,
 			route: hit?.route ?? snapshot.pinnedRoute ?? "default",
 			routeConfidence: 1,
 			matched: hit?.matched,
+			costUsd: 0,
 		};
 	}
 }
